@@ -37,7 +37,11 @@ async def inbox(
         raise HTTPException(status_code=400, detail=f"invalid json: {exc}") from exc
 
     # Dispatch is owned by the dispatcher module — phases 02+ will plug in here.
+    # Whatever happens downstream, we ack 200 so messaging-bot does not retry.
     from app.matrix.dispatcher import handle_inbound
 
-    await handle_inbound(event)
+    try:
+        await handle_inbound(event)
+    except Exception:
+        logger.exception("inbound dispatch crashed (event_id=%s)", event.get("event_id"))
     return {"status": "accepted"}

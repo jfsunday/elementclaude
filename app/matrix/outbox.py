@@ -30,38 +30,42 @@ async def close_http() -> None:
         _client = None
 
 
-async def send_text(room_id: str, body: str, *, notice: bool = False) -> str:
-    """Send a text/notice message to a room. Returns the matrix event_id."""
-    payload: dict[str, Any] = {
-        "room_id": room_id,
-        "body": body,
-        "msgtype": "m.notice" if notice else "m.text",
-    }
-    resp = await _http().post("/api/messages", json=payload)
-    resp.raise_for_status()
-    return resp.json()["event_id"]
+async def _post(path: str, payload: dict[str, Any]) -> str | None:
+    """Best-effort POST. Returns event_id on success, None on failure (logged)."""
+    try:
+        resp = await _http().post(path, json=payload)
+        resp.raise_for_status()
+        return resp.json().get("event_id")
+    except Exception as exc:
+        logger.warning("outbox %s failed: %s", path, exc)
+        return None
 
 
-async def send_markdown(room_id: str, body: str, html: str, *, notice: bool = False) -> str:
-    """Send a message with both plain and HTML body — Element renders the HTML."""
-    payload: dict[str, Any] = {
-        "room_id": room_id,
-        "body": body,
-        "msgtype": "m.notice" if notice else "m.text",
-        "formatted_body": html,
-        "format": "org.matrix.custom.html",
-    }
-    resp = await _http().post("/api/messages", json=payload)
-    resp.raise_for_status()
-    return resp.json()["event_id"]
+async def send_text(room_id: str, body: str, *, notice: bool = False) -> str | None:
+    return await _post(
+        "/api/messages",
+        {"room_id": room_id, "body": body, "msgtype": "m.notice" if notice else "m.text"},
+    )
 
 
-async def react(room_id: str, target_event_id: str, key: str) -> str:
-    """Add a reaction. Returns the reaction event_id."""
-    payload = {"room_id": room_id, "event_id": target_event_id, "key": key}
-    resp = await _http().post("/api/messages/react", json=payload)
-    resp.raise_for_status()
-    return resp.json()["event_id"]
+async def send_markdown(room_id: str, body: str, html: str, *, notice: bool = False) -> str | None:
+    return await _post(
+        "/api/messages",
+        {
+            "room_id": room_id,
+            "body": body,
+            "msgtype": "m.notice" if notice else "m.text",
+            "formatted_body": html,
+            "format": "org.matrix.custom.html",
+        },
+    )
+
+
+async def react(room_id: str, target_event_id: str, key: str) -> str | None:
+    return await _post(
+        "/api/messages/react",
+        {"room_id": room_id, "event_id": target_event_id, "key": key},
+    )
 
 
 async def list_rooms() -> list[dict[str, Any]]:
