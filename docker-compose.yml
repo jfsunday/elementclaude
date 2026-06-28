@@ -1,0 +1,20 @@
+services:
+  elementclaude:
+    build: .
+    container_name: elementclaude
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      # Read-only mount of the user's Claude config so skills (incl. gsd:*) load
+      - ${HOME}/.claude:/root/.claude:ro
+      # Where Claude actually works on real projects
+      - ${HOME}/Projekte:/host/projekte
+    ports:
+      - "${HOST_PORT:-7075}:8000"
+    networks:
+      - matrix-tools
+
+networks:
+  matrix-tools:
+    external: true
