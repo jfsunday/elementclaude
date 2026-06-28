@@ -5,7 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.bootstrap import ensure_webhook_rule
 from app.config import settings
+from app.matrix.inbox import router as inbox_router
+from app.matrix.outbox import close_http as close_outbox_http
 
 
 def _configure_logging() -> None:
@@ -22,12 +25,13 @@ async def lifespan(app: FastAPI):
     log = logging.getLogger("app.main")
     log.info("Starting elementclaude")
 
-    # DB init, bootstrap, matrix bridge, etc. land here in later phases.
+    await ensure_webhook_rule()
 
     try:
         yield
     finally:
         log.info("Shutting down elementclaude")
+        await close_outbox_http()
 
 
 app = FastAPI(
@@ -36,6 +40,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.include_router(inbox_router)
 
 
 @app.get("/health")
