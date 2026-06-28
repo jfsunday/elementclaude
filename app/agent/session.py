@@ -32,6 +32,15 @@ class RoomSession:
     client: ClaudeSDKClient | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     current_task: asyncio.Task | None = None
+    total_cost_usd: float = 0.0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    turns: int = 0
+
+
+def get_session_snapshot(room_id: str) -> RoomSession | None:
+    """Return the in-memory session if present. Used by !status."""
+    return _sessions.get(room_id)
 
 
 _sessions: dict[str, RoomSession] = {}
@@ -214,6 +223,12 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
             if new_id and new_id != sess.claude_session_id:
                 sess.claude_session_id = new_id
                 await upsert_room(room_id, claude_session_id=new_id)
+            if msg.total_cost_usd:
+                sess.total_cost_usd += float(msg.total_cost_usd)
+            usage = msg.usage or {}
+            sess.total_input_tokens += int(usage.get("input_tokens") or 0)
+            sess.total_output_tokens += int(usage.get("output_tokens") or 0)
+            sess.turns += 1
             if msg.is_error:
                 await outbox.send_text(
                     room_id,

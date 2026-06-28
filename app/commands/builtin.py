@@ -57,19 +57,35 @@ async def cmd_help(room_id: str, _args: str, _sender: str) -> None:
 
 
 async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
+    from app.agent.permissions import _auto_allowed
+    from app.agent.session import get_session_snapshot
+
     room = await get_room(room_id)
     if room is None:
         await _reply(room_id, "no room state yet")
         return
+    sess = get_session_snapshot(room_id)
+    auto = sorted(_auto_allowed.get(room_id) or set())
     lines = [
         f"**room** `{room.room_id}`",
         f"**enabled** {room.enabled}",
         f"**mode** {room.mode}",
         f"**model** {room.model}",
         f"**cwd** {room.cwd or '(unset)'}",
-        f"**session** {room.claude_session_id or '(none)'}",
+        f"**claude session** {room.claude_session_id or '(none)'}",
         f"**last activity** {room.last_activity.isoformat(timespec='seconds')}",
     ]
+    if sess is not None:
+        lines += [
+            "",
+            f"**turns** {sess.turns}",
+            f"**tokens in/out** {sess.total_input_tokens:,} / {sess.total_output_tokens:,}",
+            f"**cost** ${sess.total_cost_usd:.4f}",
+            f"**connected** {sess.client is not None}",
+            f"**running** {sess.current_task is not None and not sess.current_task.done()}",
+        ]
+    if auto:
+        lines.append(f"**auto-allowed tools** {', '.join(auto)}")
     await _reply(room_id, "\n".join(lines))
 
 
