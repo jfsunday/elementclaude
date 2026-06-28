@@ -90,6 +90,12 @@ async def _get_session(room_id: str) -> RoomSession | None:
 
 
 async def _build_client(sess: RoomSession) -> ClaudeSDKClient:
+    # Forward ANTHROPIC_API_KEY (always) and ANTHROPIC_BASE_URL (if set) into
+    # the spawned `claude` CLI so a proxy override is honored.
+    env: dict[str, str] = {"ANTHROPIC_API_KEY": settings.anthropic_api_key}
+    if settings.anthropic_base_url:
+        env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
+
     options = ClaudeAgentOptions(
         cwd=sess.cwd,
         model=sess.model,
@@ -98,6 +104,7 @@ async def _build_client(sess: RoomSession) -> ClaudeSDKClient:
         skills="all",
         setting_sources=["user", "project"],
         can_use_tool=make_can_use_tool(sess.room_id),
+        env=env,
     )
     client = ClaudeSDKClient(options=options)
     await client.connect()

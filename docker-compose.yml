@@ -10,6 +10,10 @@ services:
       # for both elementclaude-started runs and ones you started in your own
       # terminal with `claude`.
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-${HOME}/Projekte}
+      # ANTHROPIC_BASE_URL is read from .env via env_file; expose it explicitly
+      # so the `claude` subprocess sees it (some compose versions don't pass
+      # env_file vars to nested processes).
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
     volumes:
       - ./data:/data
       # Claude's home — read-write so sessions, history, etc. persist back to host.

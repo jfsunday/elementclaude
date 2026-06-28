@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     # Claude
     anthropic_api_key: str = Field(..., description="Anthropic API key")
+    anthropic_base_url: str | None = Field(
+        default=None, description="Override https://api.anthropic.com (proxy etc.)"
+    )
     default_model: str = Field(default="claude-opus-4-7")
     default_mode: str = Field(default="default")  # default | acceptEdits | plan | auto
 

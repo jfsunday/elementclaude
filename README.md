@@ -25,6 +25,7 @@ ports --reserve elementclaude
 cp .env.example .env
 # Edit:
 #   ANTHROPIC_API_KEY      — your real key
+#   ANTHROPIC_BASE_URL     — optional proxy / alt endpoint
 #   MESSAGING_BOT_API_KEY  — messaging-bot's mb_… key
 #   WEBHOOK_SECRET         — `openssl rand -hex 32`
 #   INITIAL_ADMIN_USER     — your matrix user id, e.g. @js:matrix.org
