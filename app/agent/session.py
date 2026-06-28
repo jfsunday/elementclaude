@@ -14,7 +14,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
 
 from app.agent.modes import sdk_mode
-from app.agent.permissions import make_can_use_tool
+from app.agent.permissions import clear_auto_allowed, make_can_use_tool
 from app.config import settings
 from app.matrix import outbox
 from app.rooms.state import get_room, upsert_room
@@ -126,6 +126,7 @@ async def clear_room(room_id: str) -> None:
         if sess.current_task and not sess.current_task.done():
             sess.current_task.cancel()
         await _disconnect(sess)
+    clear_auto_allowed(room_id)
     await upsert_room(room_id, claude_session_id=None)
 
 

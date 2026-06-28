@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # matrix_event_id (of the approval prompt) → Future awaited by canUseTool
 _pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
+# room_id → set[tool_name] approved "always" until !clear
+_auto_allowed: dict[str, set[str]] = {}
+
+
+def clear_auto_allowed(room_id: str) -> None:
+    _auto_allowed.pop(room_id, None)
+
 # Reactions to recognise
 _ALLOW = {"✅", "👍", "y", "yes"}
 _DENY = {"❌", "👎", "n", "no"}
@@ -103,6 +110,10 @@ def make_can_use_tool(room_id: str):
         tool_input: dict[str, Any],
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
+        if tool_name in _auto_allowed.get(room_id, set()):
+            logger.info("auto-allow %s in %s (allow-always set)", tool_name, room_id)
+            return PermissionResultAllow(behavior="allow", updated_input=None, updated_permissions=None)
+
         plain, html = _format_input_for_approval(tool_name, tool_input)
         event_id = await outbox.send_markdown(room_id, plain, html, notice=True)
 
@@ -146,7 +157,15 @@ def make_can_use_tool(room_id: str):
             decision=decision,
         )
 
-        if decision in ("allow", "allow_always"):
+        if decision == "allow_always":
+            _auto_allowed.setdefault(room_id, set()).add(tool_name)
+            await outbox.send_text(
+                room_id,
+                f"🔁 will auto-allow **{tool_name}** until `!clear`",
+                notice=True,
+            )
+            return PermissionResultAllow(behavior="allow", updated_input=None, updated_permissions=None)
+        if decision == "allow":
             return PermissionResultAllow(behavior="allow", updated_input=None, updated_permissions=None)
         return PermissionResultDeny(behavior="deny", message=f"denied by {decided_by or 'user'}", interrupt=False)
 
