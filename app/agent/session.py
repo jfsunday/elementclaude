@@ -14,6 +14,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
 
 from app.agent.modes import sdk_mode
+from app.agent.permissions import make_can_use_tool
 from app.config import settings
 from app.matrix import outbox
 from app.rooms.state import get_room, upsert_room
@@ -87,6 +88,7 @@ async def _build_client(sess: RoomSession) -> ClaudeSDKClient:
         resume=sess.claude_session_id,
         skills="all",
         setting_sources=["user", "project"],
+        can_use_tool=make_can_use_tool(sess.room_id),
     )
     client = ClaudeSDKClient(options=options)
     await client.connect()
