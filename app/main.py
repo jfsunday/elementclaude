@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         log.info("Shutting down elementclaude")
+        from app.agent.session import _sessions, _disconnect
+
+        for sess in list(_sessions.values()):
+            await _disconnect(sess)
         await close_outbox_http()
 
 

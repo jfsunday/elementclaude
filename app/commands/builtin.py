@@ -128,15 +128,18 @@ async def cmd_cwd(room_id: str, args: str, sender: str) -> None:
 
 
 async def cmd_clear(room_id: str, _args: str, sender: str) -> None:
-    # Real session reset lands in Phase 04 (kills agent session, drops claude_session_id).
-    await upsert_room(room_id, claude_session_id=None)
+    from app.agent.session import clear_room
+
+    await clear_room(room_id)
     await audit("session_clear", room_id=room_id, actor=sender)
     await _reply(room_id, "🧹 session cleared")
 
 
 async def cmd_cancel(room_id: str, _args: str, _sender: str) -> None:
-    # Real cancel lands in Phase 04 (asyncio.Task.cancel()).
-    await _reply(room_id, "no active run to cancel (phase 04)")
+    from app.agent.session import cancel_room
+
+    cancelled = await cancel_room(room_id)
+    await _reply(room_id, "🛑 cancelled" if cancelled else "no active run to cancel")
 
 
 async def cmd_resume(room_id: str, _args: str, _sender: str) -> None:
