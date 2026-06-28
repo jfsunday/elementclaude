@@ -142,9 +142,59 @@ async def cmd_cancel(room_id: str, _args: str, _sender: str) -> None:
     await _reply(room_id, "🛑 cancelled" if cancelled else "no active run to cancel")
 
 
-async def cmd_resume(room_id: str, _args: str, _sender: str) -> None:
-    # Phase 04.5
-    await _reply(room_id, "`!resume` lands with the agent integration (phase 04.5)")
+async def cmd_resume(room_id: str, args: str, sender: str) -> None:
+    from datetime import datetime, timezone
+
+    from app.agent.session import resume_room
+    from app.agent.sessions_store import list_sessions_for_cwd, session_exists
+
+    room = await get_room(room_id)
+    if room is None or not room.cwd:
+        await _reply(room_id, "set `!cwd <path>` first")
+        return
+
+    arg = args.strip()
+    sessions = list_sessions_for_cwd(room.cwd)
+
+    if not arg:
+        if not sessions:
+            await _reply(room_id, f"no sessions found for `{room.cwd}`")
+            return
+        lines = [f"**sessions in** `{room.cwd}`", ""]
+        for i, s in enumerate(sessions, start=1):
+            ts = datetime.fromtimestamp(s.mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            preview = (s.first_user_text or "(no user text)").splitlines()[0][:90]
+            lines.append(f"{i}. `{s.session_id[:8]}…` · {ts} · {preview}")
+        lines.append("")
+        lines.append("`!resume <n>` or `!resume <session-id>` to attach")
+        await _reply(room_id, "\n".join(lines))
+        return
+
+    # Index?
+    target_id: str | None = None
+    if arg.isdigit():
+        idx = int(arg)
+        if 1 <= idx <= len(sessions):
+            target_id = sessions[idx - 1].session_id
+        else:
+            await _reply(room_id, f"out of range — there are {len(sessions)} sessions")
+            return
+    else:
+        # treat as session id (full or prefix)
+        for s in sessions:
+            if s.session_id == arg or s.session_id.startswith(arg):
+                target_id = s.session_id
+                break
+        if target_id is None and session_exists(room.cwd, arg):
+            target_id = arg
+
+    if target_id is None:
+        await _reply(room_id, f"no session matching `{arg}` in `{room.cwd}`")
+        return
+
+    await resume_room(room_id, target_id)
+    await audit("session_resume", room_id=room_id, actor=sender, session_id=target_id)
+    await _reply(room_id, f"⏪ resumed session `{target_id[:8]}…`")
 
 
 # -------- !auth --------

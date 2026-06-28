@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     initial_admin_user: str = Field(..., description="Matrix user ID of the initial admin, e.g. @js:matrix.org")
 
     # Workspace
-    workspace_root: Path = Field(default=Path("/host/projekte"))
+    workspace_root: Path = Field(default=Path("/workspace"))
 
     # Misc
     data_dir: Path = Field(default=Path("/data"))

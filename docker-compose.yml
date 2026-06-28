@@ -4,12 +4,19 @@ services:
     container_name: elementclaude
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Workspace path must be identical on host and inside the container so
+      # that Claude's session store (~/.claude/projects/<encoded-cwd>/) matches
+      # for both elementclaude-started runs and ones you started in your own
+      # terminal with `claude`.
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-${HOME}/Projekte}
     volumes:
       - ./data:/data
-      # Read-only mount of the user's Claude config so skills (incl. gsd:*) load
-      - ${HOME}/.claude:/root/.claude:ro
-      # Where Claude actually works on real projects
-      - ${HOME}/Projekte:/host/projekte
+      # Claude's home — read-write so sessions, history, etc. persist back to host.
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
+      # Workspace mount: source path == target path so session paths match.
+      - ${WORKSPACE_ROOT:-${HOME}/Projekte}:${WORKSPACE_ROOT:-${HOME}/Projekte}
     ports:
       - "${HOST_PORT:-7075}:8000"
     networks:

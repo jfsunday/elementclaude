@@ -106,6 +106,17 @@ async def _disconnect(sess: RoomSession) -> None:
         sess.client = None
 
 
+async def resume_room(room_id: str, session_id: str) -> None:
+    """Attach to an existing Claude session by ID. Disconnect any current client."""
+    async with _sessions_lock:
+        sess = _sessions.pop(room_id, None)
+    if sess:
+        if sess.current_task and not sess.current_task.done():
+            sess.current_task.cancel()
+        await _disconnect(sess)
+    await upsert_room(room_id, claude_session_id=session_id)
+
+
 async def clear_room(room_id: str) -> None:
     async with _sessions_lock:
         sess = _sessions.pop(room_id, None)
