@@ -119,16 +119,20 @@ async def cmd_model(room_id: str, args: str, sender: str) -> None:
     await _reply(room_id, f"model → `{target}`")
 
 
-def _cwd_is_safe(p: Path) -> bool:
+def _cwd_is_safe(p: Path) -> tuple[bool, str]:
+    """Returns (ok, reason_if_not_ok)."""
     try:
         resolved = p.resolve()
-    except Exception:
-        return False
-    try:
-        resolved.relative_to(settings.workspace_root.resolve())
-    except ValueError:
-        return False
-    return resolved.is_dir()
+    except Exception as exc:
+        return False, f"cannot resolve path: {exc}"
+    if not resolved.is_dir():
+        return False, f"`{resolved}` is not an existing directory"
+    if settings.workspace_root is not None:
+        try:
+            resolved.relative_to(settings.workspace_root.resolve())
+        except ValueError:
+            return False, f"`{resolved}` is outside WORKSPACE_ROOT (`{settings.workspace_root}`)"
+    return True, ""
 
 
 async def cmd_cwd(room_id: str, args: str, sender: str) -> None:
@@ -137,12 +141,10 @@ async def cmd_cwd(room_id: str, args: str, sender: str) -> None:
         room = await get_room(room_id)
         await _reply(room_id, f"cwd: `{(room and room.cwd) or '(unset)'}`")
         return
-    p = Path(arg)
-    if not _cwd_is_safe(p):
-        await _reply(
-            room_id,
-            f"cwd must be an existing directory under `{settings.workspace_root}` — got `{arg}`",
-        )
+    p = Path(arg).expanduser()
+    ok, reason = _cwd_is_safe(p)
+    if not ok:
+        await _reply(room_id, f"cwd rejected: {reason}")
         return
     await upsert_room(room_id, cwd=str(p.resolve()))
     await audit("cwd_change", room_id=room_id, actor=sender, cwd=str(p.resolve()))

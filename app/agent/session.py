@@ -252,9 +252,10 @@ async def handle_prompt(room_id: str, sender_id: str, prompt: str) -> None:
         await outbox.send_text(room_id, "no room state — try `!auth add` first", notice=True)
         return
     if not room.cwd:
+        hint = settings.workspace_root if settings.workspace_root else "~/some-project"
         await outbox.send_text(
             room_id,
-            f"set a working directory first: `!cwd {settings.workspace_root}/<something>`",
+            f"set a working directory first: `!cwd {hint}`",
             notice=True,
         )
         return

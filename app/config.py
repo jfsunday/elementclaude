@@ -30,10 +30,12 @@ class Settings(BaseSettings):
     initial_admin_user: str = Field(..., description="Matrix user ID of the initial admin, e.g. @js:matrix.org")
 
     # Workspace
-    workspace_root: Path = Field(default=Path("/workspace"))
+    # Empty / unset = no restriction (cwd may be any directory the bot can read).
+    # Set to a path to require all !cwd paths live under it.
+    workspace_root: Path | None = Field(default=None)
 
     # Misc
-    data_dir: Path = Field(default=Path("/data"))
+    data_dir: Path = Field(default=Path("./data"))
     log_level: str = Field(default="INFO")
 
     @property

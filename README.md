@@ -5,71 +5,122 @@ Claude Code, but the terminal is a Matrix room.
 You DM your bot in Element. It streams its answer back into the room, asks for
 permission before every tool call (✅/❌ reactions), supports mode switches
 (`!mode plan`, `!auto`, …), session reset (`!clear`), session resume from any
-project you've ever opened with `claude` (`!resume`), and exposes every one
-of your local GSD slash commands (`!gsd:plan-phase`, …).
+project you've ever opened with `claude` (`!resume`), exposes every one of
+your local GSD slash commands (`!gsd:plan-phase`, …), and gives you a full
+interactive shell in the room (`!run sudo pacman -Syu` → next message becomes
+stdin).
 
 It is **not** itself a Matrix client. It rides on top of
-[`messaging-bot`](../messaging-bot) over the shared `matrix-tools` Docker
-network: messaging-bot delivers room events here via a webhook, and we send
-replies back through its REST API.
+[`messaging-bot`](../messaging-bot) — messaging-bot delivers room events here
+via a webhook, and we send replies back through its REST API.
 
-## Quick start
+## How it runs — **host mode** (recommended)
+
+The bot runs on your host directly so `!run` reaches your real PATH (`yay`,
+`pacman`, `sudo`, …) and Claude can touch any directory you can. messaging-bot
+keeps running in Docker; the two talk over the docker bridge.
 
 ```bash
-# 0. Make sure messaging-bot is running and you know its API key.
+# 0. Make sure messaging-bot is running, you know its API key, and you have uv installed.
 
-# 1. Reserve a port (already done if you see 7075 in your `ports --list`)
-ports --reserve elementclaude
+# 1. Reserve the port if you haven't
+ports --reserve elementclaude   # → 7075
 
 # 2. Copy env and fill secrets
 cp .env.example .env
 # Edit:
 #   ANTHROPIC_API_KEY      — your real key
 #   ANTHROPIC_BASE_URL     — optional proxy / alt endpoint
-#   MESSAGING_BOT_API_KEY  — messaging-bot's mb_… key
+#   MESSAGING_BOT_URL=http://localhost:9985
+#   MESSAGING_BOT_API_KEY  — messaging-bot's key
+#   ELEMENTCLAUDE_INTERNAL_URL=http://172.16.0.1:7075   # docker bridge IP (Linux)
 #   WEBHOOK_SECRET         — `openssl rand -hex 32`
-#   INITIAL_ADMIN_USER     — your matrix user id, e.g. @js:matrix.org
-#   WORKSPACE_ROOT         — leave blank to use ~/Projekte
+#   INITIAL_ADMIN_USER     — your matrix user id
+#   WORKSPACE_ROOT         — leave commented = no restriction
+#   DATA_DIR=./data
 
-# 3. Build & start
-dc up --build -d
+# 3. One-time foreground run to see the bootstrap
+./run-host.sh
 
-# 4. Watch the logs while it bootstraps the webhook rule
-dc logs -f elementclaude
+# 4. Once that works, install as a systemd user service
+./run-host.sh --install
+./run-host.sh --logs        # tail journal
+./run-host.sh --stop        # stop
+./run-host.sh --uninstall   # remove
 ```
 
-On the first start, elementclaude calls `messaging-bot`'s REST API to
-create a webhook rule pointing back at itself. From that point on, every
-Matrix message that hits messaging-bot is forwarded here.
+The first start (or any URL change) rewrites the webhook rule in
+messaging-bot to point at `ELEMENTCLAUDE_INTERNAL_URL`.
+
+> **Tip:** find the docker bridge IP with `ip -4 addr show docker0`. On
+> standard Docker it's `172.17.0.1`; with custom bridges it may differ
+> (mine is `172.16.0.1`).
+
+## How it ran before — **docker mode** (still possible)
+
+`docker-compose.yml` is still there. The catch: from inside the container,
+`!run` only sees the *container's* binaries (no `yay`, no host `sudo`), and
+`/etc`, `/var`, `/home/foo` are container paths. Use this mode only if you
+want elementclaude sandboxed.
+
+```bash
+dc up --build -d
+```
+
+In this mode set `MESSAGING_BOT_URL=http://messaging-bot:8000` and
+`ELEMENTCLAUDE_INTERNAL_URL=http://elementclaude:8000`.
 
 ## Onboard a room
 
-1. From your admin Matrix account, message your messaging-bot in any room or
-   in a DM. The bot needs to be in the room — invite it from Element, it
-   auto-joins.
-2. Type `!auth add` — your admin user is allowed to whitelist a room even
-   before it's enabled.
-3. Set a working directory: `!cwd /home/js/Projekte/my-project`
-4. Start asking: `make me a smoke test for the api`
+1. Invite the bot to a Matrix room from Element; it auto-joins.
+2. From your admin Matrix account, type `!auth add` — admin users can
+   whitelist any room they're in.
+3. `!cwd /home/js/Projekte/my-project`  *(or anywhere — see WORKSPACE_ROOT)*
+4. Ask: `make me a smoke test for the api`
 
 ## Slash commands
 
 Element already eats `/`, so elementclaude uses `!`.
 
+### Session
+
 | Command | What it does |
 |---|---|
 | `!help` | List all commands |
-| `!status` | mode / model / cwd / session / token usage / cost |
+| `!status` | mode / model / cwd / session / tokens / cost |
 | `!mode default\|acceptEdits\|plan\|auto` | Permission mode |
 | `!model haiku\|sonnet\|opus` | Switch model |
-| `!cwd <path>` | Working directory (must live under `$WORKSPACE_ROOT`) |
+| `!cwd <path>` | Working directory (must live under `WORKSPACE_ROOT` if set) |
 | `!clear` | New Claude session in this room |
 | `!cancel` | Stop the current run |
-| `!resume` | List sessions for this cwd (incl. ones started outside elementclaude) |
+| `!resume` | List sessions for this cwd (also ones from your own `claude` CLI) |
 | `!resume <n>\|<session-id>` | Attach to a specific session |
-| `!auth add\|remove\|list [room_id]` | Whitelist (admin) |
-| `!admin add\|remove\|list <user_id>` | Manage admins (admin) |
-| `!gsd:<cmd> [args]` | Forwarded as `/gsd:<cmd>` — all your GSD skills work |
+
+### Interactive shell (real TTY)
+
+| Command | What it does |
+|---|---|
+| `!run <cmd>` | Spawn a PTY subprocess; the next plain messages become stdin |
+| `!end` | Kill the running shell |
+| `!sig int\|term\|kill\|hup\|quit` | Send a signal |
+| `!eof` | Send Ctrl-D |
+
+So `sudo pacman -Syu` → password prompt comes back as a chat message →
+type your password as the next message → done. `yay -S foo` → `[Y/n]`
+comes back → answer `y`.
+
+### Admin
+
+| Command | What it does |
+|---|---|
+| `!auth add\|remove\|list [room_id]` | Manage whitelisted rooms |
+| `!admin add\|remove\|list <user_id>` | Manage admin Matrix users |
+
+### GSD
+
+| Command | What it does |
+|---|---|
+| `!gsd:<cmd> [args]` | Forwarded as `/gsd:<cmd>` — all GSD skills work |
 
 ## Permission modes
 
@@ -78,33 +129,30 @@ Element already eats `/`, so elementclaude uses `!`.
 | `default` | Every tool call posts an approval message; ✅ allow once, ❌ deny, 🔁 allow-this-tool-until-`!clear` |
 | `acceptEdits` | File edits auto-approved; Bash/others still ask |
 | `plan` | Read-only planning; no edits, no shell |
-| `auto` | Bypass all approvals (`bypassPermissions` in the SDK) — use carefully |
+| `auto` | Bypass all approvals — use carefully |
 
 ## Sessions
 
 - Each room has at most one Claude session at a time. The session id is
-  persisted to elementclaude's SQLite, so a container restart picks it up
-  again.
+  persisted to `data/elementclaude.sqlite3`, so a restart picks it up again.
 - `!clear` drops the session id and the auto-allow set.
 - `!resume` reads `~/.claude/projects/<encoded-cwd>/` and lets you jump back
   into anything you've ever worked on with the standalone `claude` CLI for
-  the same cwd. That's why we mount the workspace at an identical absolute
-  path on host and in the container (`$WORKSPACE_ROOT`).
+  that same cwd. In host mode this just works; in docker mode the workspace
+  path on host and in the container must match (see `docker-compose.yml`).
 
 ## Architecture
 
 ```
 Element ─▶ messaging-bot ─(webhook)─▶ elementclaude ─▶ Claude Agent SDK
                 ▲                            │
-                └────── REST (send/react)
+                └────── REST (send/react) ───┘
 ```
 
-- `messaging-bot` is left **untouched**.
-- All inbound events arrive HMAC-signed at `/webhook/inbox`.
-- All outbound (text + reactions) goes through messaging-bot's `/api/messages`
-  and `/api/messages/react`.
-- The Anthropic API key never leaves this container; messaging-bot does not
-  know it exists.
+- `messaging-bot` is **untouched**.
+- Inbound events arrive HMAC-signed at `/webhook/inbox`.
+- Outbound goes through messaging-bot's `/api/messages` and `…/react`.
+- The Anthropic API key never leaves this process.
 
 ## Layout
 
@@ -117,15 +165,6 @@ app/
 ├── rooms/              # auth (admin list) + state (per-room mode/cwd/model)
 ├── commands/           # ! parser + builtins + gsd: forwarding
 ├── agent/              # ClaudeSDKClient per room, streaming, sessions store, modes
+├── shell/              # interactive PTY subprocess for !run
 └── reactions/          # m.reaction events → approval futures
 ```
-
-## Operational notes
-
-- `dc logs -f elementclaude` will show outbox failures as warnings — that's
-  on purpose, we never let a failed reply crash the inbox.
-- Inbox always returns 200 on a valid signature so messaging-bot doesn't
-  retry; downstream failures are logged.
-- `~/.claude` is mounted read-write so new sessions persist back to your
-  host. Files written by the container will be owned by root unless you
-  bake a `UID` into the image — that's the next polish item.
