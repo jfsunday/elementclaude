@@ -34,6 +34,7 @@ HELP_TEXT = """**elementclaude — slash commands** (use `!` because `/` is Elem
 
 **Interactive shell (TTY — sudo, yay, vim, prompts all work):**
 `!run <cmd>` — start a real PTY shell; the next messages become stdin
+`!enter [n]` — send Enter (n times, default 1) — for "press enter to continue"
 `!end` — kill the running shell
 `!sig int|term|kill` — send SIGINT / SIGTERM / SIGKILL
 `!eof` — send Ctrl-D to the shell (closes stdin)
@@ -257,6 +258,21 @@ async def cmd_eof(room_id: str, _args: str, _sender: str) -> None:
     await _reply(room_id, "📡 sent EOF")
 
 
+async def cmd_enter(room_id: str, args: str, _sender: str) -> None:
+    from app.shell.interactive import get_active
+
+    sh = get_active(room_id)
+    if sh is None:
+        await _reply(room_id, "no shell running")
+        return
+    # Repeat count: `!enter 3` sends three newlines
+    n = 1
+    arg = args.strip()
+    if arg.isdigit():
+        n = max(1, min(int(arg), 50))
+    sh.write("\n" * n)
+
+
 async def cmd_resume(room_id: str, args: str, sender: str) -> None:
     from datetime import datetime, timezone
 
@@ -409,4 +425,5 @@ BUILTINS: dict[str, Handler] = {
     "end": cmd_end,
     "sig": cmd_sig,
     "eof": cmd_eof,
+    "enter": cmd_enter,
 }
