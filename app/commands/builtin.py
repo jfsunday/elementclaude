@@ -32,6 +32,12 @@ HELP_TEXT = """**elementclaude — slash commands** (use `!` because `/` is Elem
 `!cwd <path>` — working directory (must be under `{root}`)
 `!resume [n|<session-id>]` — list / resume sessions in current cwd
 
+**Interactive shell (TTY — sudo, yay, vim, prompts all work):**
+`!run <cmd>` — start a real PTY shell; the next messages become stdin
+`!end` — kill the running shell
+`!sig int|term|kill` — send SIGINT / SIGTERM / SIGKILL
+`!eof` — send Ctrl-D to the shell (closes stdin)
+
 **Admin only:**
 `!auth add <room_id>` / `!auth remove <room_id>` / `!auth list`
 `!admin add <user_id>` / `!admin remove <user_id>` / `!admin list`
@@ -156,6 +162,97 @@ async def cmd_cancel(room_id: str, _args: str, _sender: str) -> None:
 
     cancelled = await cancel_room(room_id)
     await _reply(room_id, "🛑 cancelled" if cancelled else "no active run to cancel")
+
+
+import signal
+
+
+async def cmd_run(room_id: str, args: str, sender: str) -> None:
+    from app.shell.interactive import InteractiveShell, get_active, set_active
+
+    if get_active(room_id) is not None:
+        await _reply(room_id, "a shell is already running — use `!end` first")
+        return
+
+    cmd = args.strip()
+    if not cmd:
+        await _reply(room_id, "usage: `!run <command>` — e.g. `!run sudo apt update`")
+        return
+
+    room = await get_room(room_id)
+    if room is None or not room.cwd:
+        await _reply(room_id, "set `!cwd <path>` first")
+        return
+
+    async def on_output(text: str) -> None:
+        # Use a code block so whitespace and prompts render verbatim in Element.
+        await _reply(room_id, f"```\n{text}\n```")
+
+    async def on_exit(code: int) -> None:
+        set_active(room_id, None)
+        await audit("shell_exit", room_id=room_id, actor=sender, exit_code=code, command=cmd[:200])
+        await _reply(room_id, f"🏁 shell exited (code `{code}`)")
+
+    sh = InteractiveShell(
+        room_id=room_id, cwd=room.cwd, command=cmd, on_output=on_output, on_exit=on_exit
+    )
+    set_active(room_id, sh)
+    await audit("shell_start", room_id=room_id, actor=sender, command=cmd[:200])
+    await _reply(room_id, f"▶️ running in `{room.cwd}` — send messages to type into the shell, `!end` to stop")
+    try:
+        await sh.start()
+    except Exception as exc:
+        set_active(room_id, None)
+        await _reply(room_id, f"❌ could not start shell: {exc}")
+
+
+async def cmd_end(room_id: str, _args: str, sender: str) -> None:
+    from app.shell.interactive import get_active, set_active
+
+    sh = get_active(room_id)
+    if sh is None:
+        await _reply(room_id, "no shell running")
+        return
+    await audit("shell_end", room_id=room_id, actor=sender)
+    await sh.kill()
+    set_active(room_id, None)
+
+
+_SIG_MAP = {
+    "int": signal.SIGINT,
+    "term": signal.SIGTERM,
+    "kill": signal.SIGKILL,
+    "hup": signal.SIGHUP,
+    "quit": signal.SIGQUIT,
+}
+
+
+async def cmd_sig(room_id: str, args: str, sender: str) -> None:
+    from app.shell.interactive import get_active
+
+    sh = get_active(room_id)
+    if sh is None:
+        await _reply(room_id, "no shell running")
+        return
+    name = args.strip().lower().removeprefix("sig")
+    sig = _SIG_MAP.get(name)
+    if sig is None:
+        await _reply(room_id, f"signal must be one of: {', '.join(_SIG_MAP)}")
+        return
+    ok = sh.send_signal(sig)
+    await audit("shell_signal", room_id=room_id, actor=sender, signal=name)
+    await _reply(room_id, f"{'📡' if ok else '⚠️'} sent SIG{name.upper()}")
+
+
+async def cmd_eof(room_id: str, _args: str, _sender: str) -> None:
+    from app.shell.interactive import get_active
+
+    sh = get_active(room_id)
+    if sh is None:
+        await _reply(room_id, "no shell running")
+        return
+    sh.write("\x04")  # Ctrl-D
+    await _reply(room_id, "📡 sent EOF")
 
 
 async def cmd_resume(room_id: str, args: str, sender: str) -> None:
@@ -306,4 +403,8 @@ BUILTINS: dict[str, Handler] = {
     "resume": cmd_resume,
     "auth": cmd_auth,
     "admin": cmd_admin,
+    "run": cmd_run,
+    "end": cmd_end,
+    "sig": cmd_sig,
+    "eof": cmd_eof,
 }

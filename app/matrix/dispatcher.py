@@ -58,6 +58,18 @@ async def handle_inbound(event: dict[str, Any]) -> None:
 
     await audit("inbound_message", room_id=room_id, actor=sender_id, body_preview=body[:200])
 
+    # If a !run shell is active, plain (non-!command) messages become stdin.
+    # Bot-control commands (!end, !sig, !eof, !run-again, !help, !status, …)
+    # still go through the router.
+    from app.shell.interactive import get_active
+
+    sh = get_active(room_id)
+    if sh is not None and not body.lstrip().startswith("!"):
+        # Append a newline so things like `y`, passwords, vim `:wq` work naturally.
+        if not sh.write(body + "\n"):
+            await audit("shell_stdin_failed", room_id=room_id, actor=sender_id)
+        return
+
     from app.commands.router import dispatch
 
     await dispatch(event)
