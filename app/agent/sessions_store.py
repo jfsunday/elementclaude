@@ -10,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-CLAUDE_HOME = Path(os.environ.get("CLAUDE_HOME", "/root/.claude"))
+CLAUDE_HOME = Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude"))
 
 
 @dataclass
