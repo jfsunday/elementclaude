@@ -24,16 +24,17 @@ MODEL_ALIASES = {
 HELP_TEXT = """**elementclaude — slash commands** (use `!` because `/` is Element's)
 
 `!help` — this help
-`!status` — show current mode, model, cwd, session
+`!status` — show current mode, model, cwd, tokens, running state
 `!clear` — start a new session in this room
 `!cancel` — stop the current run
 `!mode default|acceptEdits|plan|auto` — permission mode
-`!model haiku|sonnet|opus` — switch model
+`!model haiku|sonnet|opus|<full-model-id>` — switch model (any valid Claude model)
 `!cwd <path>` — working directory (must be under `{root}`)
 `!resume [n|<session-id>]` — list / resume sessions in current cwd
 
 **Interactive shell (TTY — sudo, yay, vim, prompts all work):**
 `!run <cmd>` — start a real PTY shell; the next messages become stdin
+`!ping [args]` — shortcut for `!run ping [args]`
 `!enter [n]` — send Enter (n times, default 1) — for "press enter to continue"
 `!end` — kill the running shell
 `!sig int|term|kill` — send SIGINT / SIGTERM / SIGKILL
@@ -66,6 +67,7 @@ async def cmd_help(room_id: str, _args: str, _sender: str) -> None:
 async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
     from app.agent.permissions import _auto_allowed
     from app.agent.session import get_session_snapshot
+    from app.shell.interactive import get_active
 
     room = await get_room(room_id)
     if room is None:
@@ -73,26 +75,42 @@ async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
         return
     sess = get_session_snapshot(room_id)
     auto = sorted(_auto_allowed.get(room_id) or set())
+    shell = get_active(room_id)
+
+    # Determine running state
+    is_running = False
+    running_what = None
+    if shell is not None:
+        is_running = True
+        running_what = "interactive shell"
+    elif sess is not None and sess.current_task is not None and not sess.current_task.done():
+        is_running = True
+        running_what = "claude agent"
+
     lines = [
-        f"**room** `{room.room_id}`",
-        f"**enabled** {room.enabled}",
+        f"**model** `{room.model}`",
+        f"**cwd** `{room.cwd or '(unset)'}`",
         f"**mode** {room.mode}",
-        f"**model** {room.model}",
-        f"**cwd** {room.cwd or '(unset)'}",
-        f"**claude session** {room.claude_session_id or '(none)'}",
-        f"**last activity** {room.last_activity.isoformat(timespec='seconds')}",
+        f"**running** {'🟢 ' + running_what if is_running else '⚫ idle'}",
     ]
     if sess is not None:
         lines += [
             "",
-            f"**turns** {sess.turns}",
-            f"**tokens in/out** {sess.total_input_tokens:,} / {sess.total_output_tokens:,}",
+            f"**tokens** {sess.total_input_tokens:,} in / {sess.total_output_tokens:,} out",
             f"**cost** ${sess.total_cost_usd:.4f}",
-            f"**connected** {sess.client is not None}",
-            f"**running** {sess.current_task is not None and not sess.current_task.done()}",
+            f"**turns** {sess.turns}",
         ]
+    else:
+        lines.append("")
+        lines.append("**tokens** (no session)")
+
+    lines += [
+        "",
+        f"**room** `{room.room_id}`",
+        f"**session** `{room.claude_session_id or '(none)'}`",
+    ]
     if auto:
-        lines.append(f"**auto-allowed tools** {', '.join(auto)}")
+        lines.append(f"**auto-allowed** {', '.join(auto)}")
     await _reply(room_id, "\n".join(lines))
 
 
@@ -108,11 +126,22 @@ async def cmd_mode(room_id: str, args: str, sender: str) -> None:
 
 async def cmd_model(room_id: str, args: str, sender: str) -> None:
     arg = args.strip()
-    target = MODEL_ALIASES.get(arg, arg)
-    if target not in MODEL_ALIASES.values():
+    if not arg:
+        # Show current model and available aliases
+        room = await get_room(room_id)
+        current = room.model if room else "(unset)"
+        aliases = ", ".join(f"`{k}` → `{v}`" for k, v in MODEL_ALIASES.items())
+        await _reply(room_id, f"**current:** `{current}`\n**aliases:** {aliases}\n\n_Any valid Claude model ID is accepted._")
+        return
+
+    target = MODEL_ALIASES.get(arg.lower(), arg)
+    # Accept any model string that looks like a claude model (basic validation)
+    # This allows full model IDs like claude-3-5-sonnet-20241022
+    if not target.startswith("claude-") and target not in MODEL_ALIASES.values():
+        aliases = ", ".join(f"`{k}`" for k in MODEL_ALIASES)
         await _reply(
             room_id,
-            f"model must be one of: {', '.join(MODEL_ALIASES)} (or a full model id)",
+            f"model should be: {aliases} or a full model id (e.g. `claude-3-5-sonnet-20241022`)",
         )
         return
     await upsert_room(room_id, model=target)
@@ -273,6 +302,13 @@ async def cmd_enter(room_id: str, args: str, _sender: str) -> None:
     sh.write("\n" * n)
 
 
+async def cmd_ping(room_id: str, args: str, sender: str) -> None:
+    """Shortcut for !run ping — runs ping with given args."""
+    ping_args = args.strip() if args.strip() else ""
+    full_cmd = f"ping {ping_args}" if ping_args else "ping"
+    await cmd_run(room_id, full_cmd, sender)
+
+
 async def cmd_resume(room_id: str, args: str, sender: str) -> None:
     from datetime import datetime, timezone
 
@@ -422,6 +458,7 @@ BUILTINS: dict[str, Handler] = {
     "auth": cmd_auth,
     "admin": cmd_admin,
     "run": cmd_run,
+    "ping": cmd_ping,
     "end": cmd_end,
     "sig": cmd_sig,
     "eof": cmd_eof,
