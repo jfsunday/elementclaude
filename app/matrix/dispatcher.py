@@ -58,17 +58,27 @@ async def handle_inbound(event: dict[str, Any]) -> None:
 
     await audit("inbound_message", room_id=room_id, actor=sender_id, body_preview=body[:200])
 
-    # If a !run shell is active, plain (non-!command) messages become stdin.
-    # Bot-control commands (!end, !sig, !eof, !run-again, !help, !status, …)
-    # still go through the router.
-    from app.shell.interactive import get_active
+    # Routing priority for plain messages (no `!` prefix):
+    #   1. Active PTY shell → stdin
+    #   2. Open AskUserQuestion / ExitPlanMode / approval pending → answer
+    #   3. Command router (agent prompt)
+    # `!`-commands always go through the router so control (`!end`, `!cancel`, …)
+    # works during any of these states.
+    body_starts_with_bang = body.lstrip().startswith("!")
 
-    sh = get_active(room_id)
-    if sh is not None and not body.lstrip().startswith("!"):
-        # Append a newline so things like `y`, passwords, vim `:wq` work naturally.
-        if not sh.write(body + "\n"):
-            await audit("shell_stdin_failed", room_id=room_id, actor=sender_id)
-        return
+    if not body_starts_with_bang:
+        from app.shell.interactive import get_active
+
+        sh = get_active(room_id)
+        if sh is not None:
+            if not sh.write(body + "\n"):
+                await audit("shell_stdin_failed", room_id=room_id, actor=sender_id)
+            return
+
+        from app.agent.permissions import handle_text_answer
+
+        if await handle_text_answer(room_id, body, sender_id):
+            return
 
     from app.commands.router import dispatch
 
