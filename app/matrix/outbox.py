@@ -68,6 +68,41 @@ async def react(room_id: str, target_event_id: str, key: str) -> str | None:
     )
 
 
+async def edit_text(room_id: str, event_id: str, body: str, *, notice: bool = False) -> str | None:
+    return await _post(
+        "/api/messages/edit",
+        {
+            "room_id": room_id, "event_id": event_id, "body": body,
+            "msgtype": "m.notice" if notice else "m.text",
+        },
+    )
+
+
+async def edit_markdown(
+    room_id: str, event_id: str, body: str, html: str, *, notice: bool = False
+) -> str | None:
+    return await _post(
+        "/api/messages/edit",
+        {
+            "room_id": room_id, "event_id": event_id, "body": body,
+            "msgtype": "m.notice" if notice else "m.text",
+            "formatted_body": html,
+            "format": "org.matrix.custom.html",
+        },
+    )
+
+
+async def set_typing(room_id: str, typing: bool, timeout_ms: int = 30000) -> None:
+    try:
+        resp = await _http().post(
+            "/api/messages/typing",
+            json={"room_id": room_id, "typing": typing, "timeout_ms": timeout_ms if typing else 0},
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.debug("set_typing failed: %s", exc)
+
+
 async def list_rooms() -> list[dict[str, Any]]:
     resp = await _http().get("/api/rooms")
     resp.raise_for_status()

@@ -239,58 +239,94 @@ def _format_text(text: str) -> tuple[str, str]:
     return text, html
 
 
+async def _typing_keepalive(room_id: str) -> None:
+    """Refresh the typing indicator every 20s until cancelled."""
+    try:
+        while True:
+            await outbox.set_typing(room_id, True, timeout_ms=30000)
+            await asyncio.sleep(20)
+    except asyncio.CancelledError:
+        await outbox.set_typing(room_id, False)
+        raise
+
+
 async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     if sess.client is None:
         sess.client = await _build_client_with_resume_recovery(sess)
 
     await sess.client.query(prompt)
 
-    text_buf: list[str] = []
+    # One live-updating Matrix message per assistant text stream. Every text
+    # chunk appends to `stream_text` and re-edits the same event, throttled to
+    # 1 edit per 1.2s so the homeserver doesn't groan.
+    stream_event_id: str | None = None
+    stream_text = ""
+    last_edit_time = 0.0
+    EDIT_MIN_INTERVAL = 1.2
 
-    async def flush_text() -> None:
-        if not text_buf:
+    async def flush_stream(final: bool = False) -> None:
+        nonlocal stream_event_id, stream_text, last_edit_time
+        if not stream_text.strip():
+            if final:
+                stream_event_id = None
+                stream_text = ""
             return
-        joined = "".join(text_buf).strip()
-        text_buf.clear()
-        if joined:
-            plain, html = _format_text(joined)
-            await outbox.send_markdown(room_id, plain, html)
+        plain, html = _format_text(stream_text)
+        now = asyncio.get_running_loop().time()
+        if stream_event_id is None:
+            stream_event_id = await outbox.send_markdown(room_id, plain, html)
+            last_edit_time = now
+        else:
+            if final or (now - last_edit_time) >= EDIT_MIN_INTERVAL:
+                await outbox.edit_markdown(room_id, stream_event_id, plain, html)
+                last_edit_time = now
+        if final:
+            stream_event_id = None
+            stream_text = ""
 
-    async for msg in sess.client.receive_response():
-        if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    text_buf.append(block.text)
-                elif isinstance(block, ToolUseBlock):
-                    await flush_text()
-                    plain, html = _format_tool_use(block.name, block.input)
-                    await outbox.send_markdown(room_id, plain, html, notice=True)
-                elif isinstance(block, ThinkingBlock):
-                    # Don't spam thinking into the room.
-                    pass
-                elif isinstance(block, ToolResultBlock):
-                    # Tool results in an assistant message are rare — skip.
-                    pass
-        elif isinstance(msg, ResultMessage):
-            await flush_text()
-            new_id = msg.session_id
-            if new_id and new_id != sess.claude_session_id:
-                sess.claude_session_id = new_id
-                await upsert_room(room_id, claude_session_id=new_id)
-            if msg.total_cost_usd:
-                sess.total_cost_usd += float(msg.total_cost_usd)
-            usage = msg.usage or {}
-            sess.total_input_tokens += int(usage.get("input_tokens") or 0)
-            sess.total_output_tokens += int(usage.get("output_tokens") or 0)
-            sess.turns += 1
-            if msg.is_error:
-                await outbox.send_text(
-                    room_id,
-                    f"⚠️ run ended with error (stop_reason={msg.stop_reason})",
-                    notice=True,
-                )
+    typing_task = asyncio.create_task(_typing_keepalive(room_id))
 
-    await flush_text()
+    try:
+        async for msg in sess.client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        stream_text += block.text
+                        await flush_stream()
+                    elif isinstance(block, ToolUseBlock):
+                        await flush_stream(final=True)
+                        plain, html = _format_tool_use(block.name, block.input)
+                        await outbox.send_markdown(room_id, plain, html, notice=True)
+                    elif isinstance(block, ThinkingBlock):
+                        pass  # don't spam thinking into the room
+                    elif isinstance(block, ToolResultBlock):
+                        pass
+            elif isinstance(msg, ResultMessage):
+                await flush_stream(final=True)
+                new_id = msg.session_id
+                if new_id and new_id != sess.claude_session_id:
+                    sess.claude_session_id = new_id
+                    await upsert_room(room_id, claude_session_id=new_id)
+                if msg.total_cost_usd:
+                    sess.total_cost_usd += float(msg.total_cost_usd)
+                usage = msg.usage or {}
+                sess.total_input_tokens += int(usage.get("input_tokens") or 0)
+                sess.total_output_tokens += int(usage.get("output_tokens") or 0)
+                sess.turns += 1
+                if msg.is_error:
+                    await outbox.send_text(
+                        room_id,
+                        f"⚠️ run ended with error (stop_reason={msg.stop_reason})",
+                        notice=True,
+                    )
+
+        await flush_stream(final=True)
+    finally:
+        typing_task.cancel()
+        try:
+            await typing_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def handle_prompt(room_id: str, sender_id: str, prompt: str) -> None:
