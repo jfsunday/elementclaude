@@ -31,10 +31,15 @@ async def lifespan(app: FastAPI):
     await ensure_initial_admin()
     await ensure_webhook_rule()
 
+    from app import scheduler
+
+    await scheduler.start()
+
     try:
         yield
     finally:
         log.info("Shutting down elementclaude")
+        await scheduler.stop()
         from app.agent.session import _sessions, _disconnect
 
         for sess in list(_sessions.values()):

@@ -105,12 +105,62 @@ def _make_stderr_sink(room_id: str):
     return sink
 
 
+async def _load_hooks_for_room(room_id: str):
+    """Build a claude-agent-sdk hooks dict from the room's enabled RoomHook rows.
+    Each hook fires a user-provided shell command; SDK ignores anything the
+    hook returns beyond the empty JSON output."""
+    import asyncio as _asyncio
+
+    from claude_agent_sdk.types import HookMatcher
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import RoomHook
+
+    async with session_scope() as s:
+        rows = list((await s.scalars(
+            select(RoomHook).where(
+                RoomHook.room_id == room_id, RoomHook.enabled.is_(True)
+            )
+        )).all())
+
+    if not rows:
+        return None
+
+    def make_cb(command: str, event: str):
+        async def cb(hook_input, tool_use_id, context):  # noqa: ANN001
+            try:
+                proc = await _asyncio.create_subprocess_shell(
+                    command,
+                    stdout=_asyncio.subprocess.DEVNULL,
+                    stderr=_asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    await _asyncio.wait_for(proc.wait(), timeout=30.0)
+                except _asyncio.TimeoutError:
+                    proc.kill()
+                    logger.warning("hook %s for room=%s timed out", event, room_id)
+            except Exception:
+                logger.exception("hook %s crashed (cmd=%s)", event, command[:120])
+            return {}
+        return cb
+
+    hooks: dict[str, list[HookMatcher]] = {}
+    for row in rows:
+        hooks.setdefault(row.event, []).append(
+            HookMatcher(matcher=None, hooks=[make_cb(row.command, row.event)])
+        )
+    return hooks
+
+
 async def _build_client(sess: RoomSession, *, resume: str | None) -> ClaudeSDKClient:
     # Forward ANTHROPIC_API_KEY (always) and ANTHROPIC_BASE_URL (if set) into
     # the spawned `claude` CLI so a proxy override is honored.
     env: dict[str, str] = {"ANTHROPIC_API_KEY": settings.anthropic_api_key}
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
+
+    hooks = await _load_hooks_for_room(sess.room_id)
 
     _stderr_buffer[sess.room_id] = []
     options = ClaudeAgentOptions(
@@ -123,6 +173,7 @@ async def _build_client(sess: RoomSession, *, resume: str | None) -> ClaudeSDKCl
         can_use_tool=make_can_use_tool(sess.room_id),
         env=env,
         stderr=_make_stderr_sink(sess.room_id),
+        hooks=hooks,
     )
     client = ClaudeSDKClient(options=options)
     await client.connect()

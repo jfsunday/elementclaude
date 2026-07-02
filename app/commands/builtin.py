@@ -464,3 +464,18 @@ BUILTINS: dict[str, Handler] = {
     "eof": cmd_eof,
     "enter": cmd_enter,
 }
+
+
+def _register_automation() -> None:
+    from app.commands.batch import cmd_batch
+    from app.commands.hooks import cmd_hook
+    from app.commands.schedule import cmd_schedule
+
+    BUILTINS.update({
+        "schedule": cmd_schedule,
+        "batch": cmd_batch,
+        "hook": cmd_hook,
+    })
+
+
+_register_automation()
