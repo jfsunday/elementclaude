@@ -89,30 +89,77 @@ async def _get_session(room_id: str) -> RoomSession | None:
         return sess
 
 
-async def _build_client(sess: RoomSession) -> ClaudeSDKClient:
+_stderr_buffer: dict[str, list[str]] = {}
+
+
+def _make_stderr_sink(room_id: str):
+    def sink(line: str) -> None:
+        buf = _stderr_buffer.setdefault(room_id, [])
+        buf.append(line)
+        # keep only last 40 lines to avoid unbounded growth
+        if len(buf) > 40:
+            del buf[: len(buf) - 40]
+        # Also surface to journal for post-mortem
+        logger.warning("claude cli stderr [%s]: %s", room_id, line.rstrip())
+
+    return sink
+
+
+async def _build_client(sess: RoomSession, *, resume: str | None) -> ClaudeSDKClient:
     # Forward ANTHROPIC_API_KEY (always) and ANTHROPIC_BASE_URL (if set) into
     # the spawned `claude` CLI so a proxy override is honored.
     env: dict[str, str] = {"ANTHROPIC_API_KEY": settings.anthropic_api_key}
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
 
+    _stderr_buffer[sess.room_id] = []
     options = ClaudeAgentOptions(
         cwd=sess.cwd,
         model=sess.model,
         permission_mode=sdk_mode(sess.mode),
-        resume=sess.claude_session_id,
+        resume=resume,
         skills="all",
         setting_sources=["user", "project"],
         can_use_tool=make_can_use_tool(sess.room_id),
         env=env,
+        stderr=_make_stderr_sink(sess.room_id),
     )
     client = ClaudeSDKClient(options=options)
     await client.connect()
     logger.info(
         "agent connected room=%s cwd=%s model=%s mode=%s resume=%s",
-        sess.room_id, sess.cwd, sess.model, sess.mode, sess.claude_session_id,
+        sess.room_id, sess.cwd, sess.model, sess.mode, resume,
     )
     return client
+
+
+async def _build_client_with_resume_recovery(sess: RoomSession) -> ClaudeSDKClient:
+    """Build the client; if the requested resume session is gone from the local
+    store, drop the stale id and retry with a fresh session so the room isn't
+    stuck in a crash loop."""
+    try:
+        return await _build_client(sess, resume=sess.claude_session_id)
+    except Exception as exc:
+        stderr = "\n".join(_stderr_buffer.get(sess.room_id, []))
+        stale_resume = bool(sess.claude_session_id) and (
+            "No conversation found" in stderr
+            or "Session not found" in stderr
+            or "session id" in stderr.lower() and sess.claude_session_id in stderr
+        )
+        if not stale_resume:
+            raise
+        logger.warning(
+            "resume session %s missing for room %s — retrying without resume",
+            sess.claude_session_id, sess.room_id,
+        )
+        await outbox.send_text(
+            sess.room_id,
+            f"⚠️ previous session `{sess.claude_session_id[:8]}…` was gone from Claude's store — starting a fresh session.",
+            notice=True,
+        )
+        sess.claude_session_id = None
+        await upsert_room(sess.room_id, claude_session_id=None)
+        return await _build_client(sess, resume=None)
 
 
 async def _disconnect(sess: RoomSession) -> None:
@@ -194,7 +241,7 @@ def _format_text(text: str) -> tuple[str, str]:
 
 async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     if sess.client is None:
-        sess.client = await _build_client(sess)
+        sess.client = await _build_client_with_resume_recovery(sess)
 
     await sess.client.query(prompt)
 
@@ -278,10 +325,23 @@ async def handle_prompt(room_id: str, sender_id: str, prompt: str) -> None:
         try:
             await _run_prompt(room_id, sess, prompt)
         except asyncio.CancelledError:
-            await outbox.send_text(room_id, "🛑 cancelled", notice=True)
+            # Shield the outbox call from cancellation so the message actually gets sent
+            try:
+                await asyncio.shield(outbox.send_text(room_id, "🛑 cancelled", notice=True))
+            except asyncio.CancelledError:
+                pass  # Ignore if shield itself is cancelled
             # Don't re-raise — we want the room to stay usable.
         except Exception:
             logger.exception("agent run crashed for room=%s", room_id)
-            await outbox.send_text(room_id, "❌ run crashed — check container logs", notice=True)
+            tail = "\n".join(_stderr_buffer.get(room_id, [])[-5:]).strip()
+            hint = f"\n```\n{tail}\n```" if tail else ""
+            try:
+                await asyncio.shield(outbox.send_text(
+                    room_id,
+                    f"❌ run crashed — `./run-host.sh --logs` for full trace{hint}",
+                    notice=True,
+                ))
+            except asyncio.CancelledError:
+                pass
         finally:
             sess.current_task = None
