@@ -21,3 +21,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["app", "app.matrix", "app.rooms", "app.commands", "app.agent", "app.reactions", "app.shell"]
+
+[project.optional-dependencies]
+# nothing yet

@@ -103,6 +103,56 @@ async def set_typing(room_id: str, typing: bool, timeout_ms: int = 30000) -> Non
         logger.debug("set_typing failed: %s", exc)
 
 
+async def download_media(mxc: str | None, file_info: dict[str, Any] | None = None) -> tuple[bytes, str] | None:
+    """Fetch an mxc uri (encrypted or not). Returns (bytes, content_type) or None on failure."""
+    if not mxc and not file_info:
+        return None
+    try:
+        resp = await _http().post(
+            "/api/media/download",
+            json={"mxc": mxc, "file": file_info},
+            timeout=httpx.Timeout(60.0),
+        )
+        resp.raise_for_status()
+        ctype = resp.headers.get("content-type", "application/octet-stream")
+        return resp.content, ctype
+    except Exception as exc:
+        logger.warning("download_media failed: %s", exc)
+        return None
+
+
+async def send_media(
+    room_id: str, path: str, *, msgtype: str = "m.image", caption: str | None = None
+) -> str | None:
+    """Upload a local file and post it as a media message. Returns event_id or None."""
+    import mimetypes
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.is_file():
+        logger.warning("send_media: file not found: %s", path)
+        return None
+    mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    try:
+        with p.open("rb") as f:
+            data = f.read()
+        files = {"file": (p.name, data, mime)}
+        form = {"room_id": room_id, "msgtype": msgtype}
+        if caption:
+            form["caption"] = caption
+        resp = await _http().post(
+            "/api/messages/media",
+            files=files,
+            data=form,
+            timeout=httpx.Timeout(60.0),
+        )
+        resp.raise_for_status()
+        return resp.json().get("event_id")
+    except Exception as exc:
+        logger.warning("send_media failed for %s: %s", path, exc)
+        return None
+
+
 async def list_rooms() -> list[dict[str, Any]]:
     resp = await _http().get("/api/rooms")
     resp.raise_for_status()

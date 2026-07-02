@@ -16,6 +16,13 @@ def _is_text_message(event: dict[str, Any]) -> bool:
     return content.get("msgtype") == "m.text" and bool(event.get("body"))
 
 
+def _is_media_message(event: dict[str, Any]) -> bool:
+    if event.get("event_type") != "m.room.message":
+        return False
+    content = event.get("content") or {}
+    return content.get("msgtype") in {"m.image", "m.file", "m.video", "m.audio"}
+
+
 def _is_reaction(event: dict[str, Any]) -> bool:
     return event.get("event_type") == "m.reaction"
 
@@ -36,6 +43,21 @@ async def handle_inbound(event: dict[str, Any]) -> None:
         from app.reactions.tracker import handle_reaction
 
         await handle_reaction(event)
+        return
+
+    if _is_media_message(event):
+        if not await is_room_enabled(room_id):
+            return
+        from app.agent.attachments import handle_inbound_media
+        from app.matrix import outbox
+
+        path = await handle_inbound_media(event)
+        if path is not None:
+            await outbox.send_text(
+                room_id,
+                f"📎 attached — will hand it to Claude with your next message.",
+                notice=True,
+            )
         return
 
     if not _is_text_message(event):

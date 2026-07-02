@@ -254,7 +254,13 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     if sess.client is None:
         sess.client = await _build_client_with_resume_recovery(sess)
 
-    await sess.client.query(prompt)
+    # If images/files were dropped into the room since the last prompt, prepend
+    # their paths so Claude reads them via its Read tool.
+    from app.agent.attachments import format_prompt_with_attachments, pop_attachments
+
+    attachments = await pop_attachments(room_id)
+    prompt_for_claude = format_prompt_with_attachments(prompt, attachments)
+    await sess.client.query(prompt_for_claude)
 
     # One live-updating Matrix message per assistant text stream. Every text
     # chunk appends to `stream_text` and re-edits the same event, throttled to
