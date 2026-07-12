@@ -22,6 +22,16 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_aware(dt: datetime | None) -> datetime | None:
+    """SQLite drops timezone info on read; re-anchor to UTC so we can compare
+    against tz-aware `now()`."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def next_from(cron_expr: str, base: datetime | None = None) -> datetime:
     it = croniter(cron_expr, base or _now())
     return it.get_next(datetime)
@@ -63,10 +73,11 @@ async def _tick() -> None:
 
         due: list[ScheduledTask] = []
         for row in rows:
-            if row.next_run_at is None:
+            next_at = _as_aware(row.next_run_at)
+            if next_at is None:
                 row.next_run_at = next_from(row.cron_expr, now)
                 continue
-            if row.next_run_at <= now:
+            if next_at <= now:
                 due.append(row)
                 row.last_run_at = now
                 row.next_run_at = next_from(row.cron_expr, now)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,32 +22,49 @@ MODEL_ALIASES = {
 }
 
 
-HELP_TEXT = """**elementclaude — slash commands** (use `!` because `/` is Element's)
+@dataclass
+class HelpEntry:
+    canonical: str            # matches a key in BUILTINS
+    description: str
+    args_hint: str = ""       # e.g. "<path>", "<cron> <cmd>"
 
-`!help` — this help
-`!status` — show current mode, model, cwd, tokens, running state
-`!clear` — start a new session in this room
-`!cancel` — stop the current run
-`!mode default|acceptEdits|plan|auto` — permission mode
-`!model haiku|sonnet|opus|<full-model-id>` — switch model (any valid Claude model)
-`!cwd <path>` — working directory (must be under `{root}`)
-`!resume [n|<session-id>]` — list / resume sessions in current cwd
 
-**Interactive shell (TTY — sudo, yay, vim, prompts all work):**
-`!run <cmd>` — start a real PTY shell; the next messages become stdin
-`!ping [args]` — shortcut for `!run ping [args]`
-`!enter [n]` — send Enter (n times, default 1) — for "press enter to continue"
-`!end` — kill the running shell
-`!sig int|term|kill` — send SIGINT / SIGTERM / SIGKILL
-`!eof` — send Ctrl-D to the shell (closes stdin)
+@dataclass
+class HelpSection:
+    title: str
+    entries: list[HelpEntry] = field(default_factory=list)
 
-**Admin only:**
-`!auth add <room_id>` / `!auth remove <room_id>` / `!auth list`
-`!admin add <user_id>` / `!admin remove <user_id>` / `!admin list`
 
-**GSD:**
-`!gsd:<command> [args]` — forwarded to Claude as `/gsd:<command>`
-"""
+_HELP_STRUCTURE: list[HelpSection] = [
+    HelpSection("Session", [
+        HelpEntry("help", "this help"),
+        HelpEntry("status", "show mode, model, cwd, tokens, running state"),
+        HelpEntry("mode", "permission mode", "default|acceptEdits|plan|auto"),
+        HelpEntry("model", "switch model", "haiku|sonnet|opus|<full-id>"),
+        HelpEntry("cwd", "working directory", "<path>"),
+        HelpEntry("clear", "start a new Claude session"),
+        HelpEntry("cancel", "stop the current run"),
+        HelpEntry("resume", "list / attach to sessions in current cwd", "[n|<session-id>]"),
+    ]),
+    HelpSection("Interactive shell (TTY)", [
+        HelpEntry("run", "spawn PTY shell; next msgs become stdin", "<cmd>"),
+        HelpEntry("ping", "shortcut for `!run ping`", "[args]"),
+        HelpEntry("enter", "send Enter (n×)", "[n]"),
+        HelpEntry("end", "kill the shell"),
+        HelpEntry("sig", "send signal", "int|term|kill|hup|quit"),
+        HelpEntry("eof", "send Ctrl-D"),
+    ]),
+    HelpSection("Automation", [
+        HelpEntry("schedule", "cron a command", "<cron> <cmd>"),
+        HelpEntry("batch", "chain commands", "<cmd1> && <cmd2> ; <cmd3>"),
+        HelpEntry("hook", "lifecycle hooks", "add|list|remove <event> <cmd>"),
+        HelpEntry("link", "custom aliases", "<name> <target> [--desc \"...\"] [--exact] [--global]"),
+    ]),
+    HelpSection("Admin", [
+        HelpEntry("auth", "manage whitelisted rooms", "add|remove|list [room_id]"),
+        HelpEntry("admin", "manage admins", "add|remove|list <user_id>"),
+    ]),
+]
 
 
 async def _reply(room_id: str, text: str, *, html: str | None = None) -> None:
@@ -60,8 +78,33 @@ async def _reply(room_id: str, text: str, *, html: str | None = None) -> None:
 
 
 async def cmd_help(room_id: str, _args: str, _sender: str) -> None:
-    text = HELP_TEXT.format(root=str(settings.workspace_root))
-    await _reply(room_id, text)
+    from app.commands.aliases import build_alias_maps
+
+    inline_map, customs = await build_alias_maps(room_id)
+
+    lines = ["**elementclaude — slash commands** (use `!` because `/` is Element's)"]
+    for section in _HELP_STRUCTURE:
+        lines.append(f"\n**{section.title}:**")
+        for e in section.entries:
+            names = [f"!{e.canonical}"] + [f"!{a}" for a in inline_map.get(e.canonical, [])]
+            name_str = ", ".join(f"`{n}`" for n in names)
+            hint = f" {e.args_hint}" if e.args_hint else ""
+            lines.append(f"{name_str}{hint} — {e.description}")
+
+    if customs:
+        lines.append("\n**Custom aliases:**")
+        for name, target, desc, exact, is_global in customs:
+            desc_part = f" — {desc}" if desc else ""
+            marks = []
+            if exact:
+                marks.append("exact")
+            if is_global:
+                marks.append("global")
+            mark_str = f" _({', '.join(marks)})_" if marks else ""
+            lines.append(f"`!{name}`{desc_part}  _(→ `{target}`{mark_str})_")
+
+    lines.append("\n**GSD:** `!gsd:<command> [args]` — forwarded to Claude as `/gsd:<command>`")
+    await _reply(room_id, "\n".join(lines))
 
 
 async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
@@ -469,12 +512,14 @@ BUILTINS: dict[str, Handler] = {
 def _register_automation() -> None:
     from app.commands.batch import cmd_batch
     from app.commands.hooks import cmd_hook
+    from app.commands.link import cmd_link
     from app.commands.schedule import cmd_schedule
 
     BUILTINS.update({
         "schedule": cmd_schedule,
         "batch": cmd_batch,
         "hook": cmd_hook,
+        "link": cmd_link,
     })
 
 
