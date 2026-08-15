@@ -1,0 +1,67 @@
+# elementclaude
+
+## Purpose
+elementclaude turns a Matrix/Element DM into a full Claude Code terminal. `messaging-bot`
+(a separate, untouched sibling project) delivers Matrix room events here via an HMAC-signed
+webhook; elementclaude drives the Claude Agent SDK per room (mode, model, cwd, session id
+persisted in SQLite), streams answers back through messaging-bot's REST API, asks for tool
+permission via ✅/❌ reactions, and exposes an interactive PTY shell (`!run`) plus all local
+GSD slash commands (`!gsd:...`).
+
+## Tech stack
+- Python 3.12, FastAPI + uvicorn, pydantic-settings, SQLAlchemy (async) + aiosqlite
+- `claude-agent-sdk` (shells out to the `claude` CLI, Node 20 required in the container)
+- httpx for the messaging-bot REST bridge, croniter for `!schedule`
+- Dependency/venv management via `uv` (see `pyproject.toml` / `uv.lock`)
+- Runs either directly on the host (`./run-host.sh`, installs a systemd **user** service) or
+  in Docker (`docker-compose.yml`)
+
+## Directory layout
+```
+app/
+├── main.py             # FastAPI lifespan: db init, admin bootstrap, webhook rule
+├── bootstrap.py        # idempotent rule creation in messaging-bot
+├── config.py            # pydantic Settings, env-driven
+├── db.py / models.py    # async SQLAlchemy engine/session + ORM models
+├── matrix/              # inbox (HMAC webhook) + outbox (REST wrapper) + dispatcher
+├── rooms/                # auth (admin/whitelist) + state (per-room mode/cwd/model/session)
+├── commands/             # "!" command parser + builtins + aliases/link/batch/hooks/schedule
+├── agent/                # ClaudeSDKClient per room: session.py, modes.py, permissions.py,
+│                          # sessions_store.py, attachments.py
+├── shell/                # interactive.py — PTY subprocess for !run
+└── reactions/            # tracker.py — m.reaction events → approval futures
+```
+
+## Conventions
+- `from __future__ import annotations` at the top of every module.
+- Async-first: DB access via `session_scope()` (see `app/db.py`), route handlers and room
+  logic are `async def`.
+- Per-room persistent state (mode, model, cwd, `claude_session_id`, enabled) lives in the
+  `Room` SQLAlchemy model, mutated only through `app/rooms/state.py` helpers
+  (`get_room`, `upsert_room`, `audit`) — never write to the table directly elsewhere.
+- Permission modes are `default | acceptEdits | plan | auto`, mapped to the SDK's
+  `default | acceptEdits | plan | bypassPermissions` in `app/agent/modes.py`
+  (`MODE_TO_SDK` / `sdk_mode()`). Keep this mapping as the single source of truth for mode
+  logic — do not hardcode SDK mode strings elsewhere.
+- Chat commands are `!`-prefixed (Element eats `/`); GSD skills are forwarded as
+  `!gsd:<cmd>` → `/gsd:<cmd>`. New commands go through `app/commands/router.py`.
+- Settings are env-driven via `pydantic-settings` (`app/config.py`, backed by `.env`,
+  see `.env.example`). Add new config as typed `Field`s there, not ad-hoc `os.environ` reads.
+
+## Running / testing
+- Copy `.env.example` → `.env` and fill secrets (Anthropic key, messaging-bot URL/key,
+  webhook secret, admin Matrix user id).
+- Host mode (recommended, needed for `!run` to reach real host binaries):
+  `./run-host.sh` (foreground) or `./run-host.sh --install` (systemd user service).
+- Docker mode (sandboxed): `dc up --build -d` (project alias `dc` = `docker compose`).
+- No test suite exists yet; when adding one, wire it into `pyproject.toml` and prefer
+  `pytest` + `pytest-asyncio` given the async codebase.
+
+## Out of scope / do NOT
+- **Never** start/stop/restart/enable/disable the `elementclaude` systemd user service, and
+  never edit the unit file directly — the user restarts it manually after pulling new code.
+  Only `run-host.sh` may generate/manage the unit file, and only when the user runs it.
+- Do not modify `messaging-bot` — it's a separate, untouched sibling project; only interact
+  with it through its REST API / webhook contract.
+- Do not weaken the HMAC webhook signature check in `app/matrix/inbox.py`, and do not log or
+  persist the Anthropic API key — it must never leave this process.
