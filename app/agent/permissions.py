@@ -58,6 +58,7 @@ def clear_auto_allowed(room_id: str) -> None:
 _ALLOW = {"✅", "👍", "y", "yes"}
 _DENY = {"❌", "👎", "n", "no"}
 _ALLOW_ALWAYS = {"🔁", "♾", "always"}
+_ALLOW_AUTO = {"🚀", "auto"}  # plan approval: switch to auto mode afterwards
 
 # Emoji digits used for numbered question options (up to 9)
 _DIGIT_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
@@ -343,13 +344,16 @@ async def handle_exit_plan_mode(
             posted_ids.append(eid)
 
     # Final ask-message that carries the reactions
-    ask_plain = "✅ approve plan · ❌ reject · or reply with feedback to iterate"
-    ask_html = "✅ approve plan · ❌ reject · or reply with feedback to iterate"
+    ask_plain = (
+        "✅ approve — manual (default mode) · 🚀 approve — auto mode · "
+        "❌ reject · or reply with feedback to iterate"
+    )
+    ask_html = ask_plain
     ask_id = await outbox.send_markdown(room_id, ask_plain, ask_html, notice=True)
     if not ask_id:
         return PermissionResultDeny(behavior="deny", message="could not post approval prompt", interrupt=False)
 
-    for emoji in ("✅", "❌"):
+    for emoji in ("✅", "🚀", "❌"):
         await outbox.react(room_id, ask_id, emoji)
 
     loop = asyncio.get_running_loop()
@@ -370,9 +374,17 @@ async def handle_exit_plan_mode(
 
     decision = result.get("decision")
     decided_by = result.get("decided_by", "")
-    await audit("plan_decision", room_id=room_id, actor=decided_by, decision=decision or "?")
+    next_mode = result.get("next_mode", "default")
+    await audit(
+        "plan_decision", room_id=room_id, actor=decided_by, decision=decision or "?", next_mode=next_mode
+    )
 
     if decision == "allow":
+        # Switch the room out of `plan` mode into whatever the user picked
+        # (manual/default or auto) — keeps DB and the live SDK client in sync.
+        from app.agent.session import set_room_mode
+
+        await set_room_mode(room_id, next_mode)
         return PermissionResultAllow(behavior="allow", updated_input=None, updated_permissions=None)
     feedback = result.get("feedback", "")
     msg = f"user rejected: {feedback}" if feedback else "user rejected the plan"
@@ -425,7 +437,10 @@ async def handle_reaction_event(target_event_id: str, key: str, sender: str) -> 
 
     if pending.kind == "plan":
         if key in _ALLOW or key_norm in _ALLOW:
-            pending.future.set_result({"decision": "allow", "decided_by": sender})
+            pending.future.set_result({"decision": "allow", "decided_by": sender, "next_mode": "default"})
+            return True
+        if key in _ALLOW_AUTO or key_norm in _ALLOW_AUTO:
+            pending.future.set_result({"decision": "allow", "decided_by": sender, "next_mode": "auto"})
             return True
         if key in _DENY or key_norm in _DENY:
             pending.future.set_result({"decision": "deny", "decided_by": sender})
@@ -485,7 +500,10 @@ async def handle_text_answer(room_id: str, text: str, sender: str) -> bool:
 
     if pending.kind == "plan":
         if text_norm in _ALLOW:
-            pending.future.set_result({"decision": "allow", "decided_by": sender})
+            pending.future.set_result({"decision": "allow", "decided_by": sender, "next_mode": "default"})
+            return True
+        if text_norm in _ALLOW_AUTO:
+            pending.future.set_result({"decision": "allow", "decided_by": sender, "next_mode": "auto"})
             return True
         if text_norm in _DENY:
             pending.future.set_result({"decision": "deny", "decided_by": sender, "feedback": ""})

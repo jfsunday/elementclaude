@@ -241,7 +241,25 @@ async def clear_room(room_id: str) -> None:
             sess.current_task.cancel()
         await _disconnect(sess)
     clear_auto_allowed(room_id)
-    await upsert_room(room_id, claude_session_id=None)
+    await upsert_room(room_id, claude_session_id=None, mode=settings.default_mode)
+
+
+async def set_room_mode(room_id: str, mode: str) -> None:
+    """Update the room's mode in the DB and, if a live session/client exists,
+    switch the SDK client's permission mode too — so an in-flight run (e.g.
+    right after a plan approval) doesn't stay stuck in the old mode until the
+    process reconnects."""
+    await upsert_room(room_id, mode=mode)
+    sess = _sessions.get(room_id)
+    if sess is None:
+        return
+    sess.mode = mode
+    if sess.client is not None:
+        try:
+            await sess.client.set_permission_mode(sdk_mode(mode))
+        except Exception:
+            logger.exception("set_permission_mode failed in set_room_mode; will reconnect on next prompt")
+            await _disconnect(sess)
 
 
 async def cancel_room(room_id: str) -> bool:
