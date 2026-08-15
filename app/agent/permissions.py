@@ -295,7 +295,12 @@ async def handle_ask_user_question(
         )
 
     return PermissionResultAllow(
-        behavior="allow", updated_input={"answers": answers}, updated_permissions=None
+        behavior="allow",
+        updated_input={
+            "questions": questions,
+            "answers": answers,
+        },
+        updated_permissions=None,
     )
 
 
