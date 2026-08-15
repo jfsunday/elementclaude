@@ -229,7 +229,7 @@ async def cmd_clear(room_id: str, _args: str, sender: str) -> None:
 
     await clear_room(room_id)
     await audit("session_clear", room_id=room_id, actor=sender)
-    await _reply(room_id, "🧹 session cleared")
+    await _reply(room_id, f"🧹 session cleared → mode `{settings.default_mode}`")
 
 
 async def cmd_cancel(room_id: str, _args: str, _sender: str) -> None:
