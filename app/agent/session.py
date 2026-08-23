@@ -308,15 +308,9 @@ def _format_text(text: str) -> tuple[str, str]:
     return text, html
 
 
-async def _typing_keepalive(room_id: str) -> None:
-    """Refresh the typing indicator every 20s until cancelled."""
-    try:
-        while True:
-            await outbox.set_typing(room_id, True, timeout_ms=30000)
-            await asyncio.sleep(20)
-    except asyncio.CancelledError:
-        await outbox.set_typing(room_id, False)
-        raise
+# Rooms already told that TTS is broken — the warning is worth saying once, not
+# after every single answer.
+_tts_warned: set[str] = set()
 
 
 async def _maybe_speak(room_id: str, text: str) -> None:
@@ -327,13 +321,22 @@ async def _maybe_speak(room_id: str, text: str) -> None:
     if room is None or not room.tts_enabled:
         return
     try:
-        from app.voice.tts import synthesize
+        from app.voice import tts
 
-        path = await synthesize(
-            text, local=room.voice_engine == "local", voice=room.tts_voice
-        )
+        local = room.voice_engine == "local"
+        reason = tts.unavailable_reason(local=local)
+        path = None if reason else await tts.synthesize(text, local=local, voice=room.tts_voice)
         if path is None:
+            if room_id not in _tts_warned:
+                _tts_warned.add(room_id)
+                detail = reason or "synthesis failed — see the logs"
+                await outbox.send_text(
+                    room_id,
+                    f"⚠️ tts is on but silent: {detail}. `!voice tts off` to stop trying.",
+                    notice=True,
+                )
             return
+        _tts_warned.discard(room_id)
         await outbox.send_media(room_id, str(path), msgtype="m.audio")
     except Exception:
         logger.exception("TTS failed for room=%s", room_id)
@@ -382,7 +385,7 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
             stream_event_id = None
             stream_text = ""
 
-    typing_task = asyncio.create_task(_typing_keepalive(room_id))
+    typing_task = asyncio.create_task(outbox.typing_keepalive(room_id))
 
     try:
         async for msg in sess.client.receive_response():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -67,6 +68,11 @@ async def _route_text(event: dict[str, Any], body: str, room_id: str, sender_id:
     await dispatch(event)
 
 
+# Rough ceiling so a missing `info.duration` can't smuggle an hour of audio into
+# Whisper: 32 KiB/s is far above any Matrix voice-message bitrate.
+_STT_BYTES_PER_SECOND = 32 * 1024
+
+
 async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> None:
     from app.agent.attachments import handle_inbound_media, queue_attachment
     from app.matrix import outbox
@@ -92,6 +98,17 @@ async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> 
     if path is None:
         return
 
+    # Clients that don't send `info.duration` bypass the check above, so guard on size too.
+    if want_stt and path.stat().st_size > settings.stt_max_seconds * _STT_BYTES_PER_SECOND:
+        await queue_attachment(room_id, path)
+        await outbox.send_text(
+            room_id,
+            f"🎙️ too large to transcribe (cap is ~{settings.stt_max_seconds}s) — "
+            "📎 attached instead.",
+            notice=True,
+        )
+        return
+
     if not want_stt:
         await outbox.send_text(
             room_id,
@@ -102,20 +119,37 @@ async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> 
 
     from app.voice import stt
 
-    use_local, note = stt.resolve_local(room.voice_engine if room else "cloud")
-    if note:
-        await outbox.send_text(room_id, f"ℹ️ {note}", notice=True)
+    # `resolve_local`'s "no token → local" note is shown by `!voice`, not per message.
+    use_local, _note = stt.resolve_local(room.voice_engine if room else "cloud")
 
-    await outbox.set_typing(room_id, True)
-    try:
-        transcript = await stt.transcribe(path, local=use_local)
-    finally:
-        await outbox.set_typing(room_id, False)
+    reason = stt.unavailable_reason(local=use_local)
+    if reason is None and use_local and not stt.model_loaded():
+        # First local run in this process may download a multi-GB model.
+        await outbox.send_text(
+            room_id,
+            "🎙️ transcribing locally — the first run downloads the Whisper model, "
+            "this can take a few minutes.",
+            notice=True,
+        )
+
+    if reason is not None:
+        transcript = None
+    else:
+        typing_task = asyncio.create_task(outbox.typing_keepalive(room_id))
+        try:
+            transcript = await stt.transcribe(path, local=use_local)
+        finally:
+            typing_task.cancel()
+            try:
+                await typing_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     if transcript is None:
         await queue_attachment(room_id, path)
+        detail = reason or "could not transcribe"
         await outbox.send_text(
-            room_id, "⚠️ could not transcribe — 📎 attached the audio instead.", notice=True
+            room_id, f"⚠️ {detail} — 📎 attached the audio instead.", notice=True
         )
         return
 

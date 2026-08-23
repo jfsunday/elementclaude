@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import re
 import shutil
@@ -18,7 +19,10 @@ _URL = re.compile(r"https?://\S+")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
 _MD_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
-_MD_EMPHASIS = re.compile(r"(\*{1,3}|_{1,3}|~~)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MD_EMPHASIS = re.compile(r"(\*{1,3}|~~)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+# `_` only counts as emphasis when it wraps a single word from the outside — this is a
+# coding assistant, so `snake_case` identifiers and `__dunder__` names must survive intact.
+_MD_UNDERSCORE = re.compile(r"(?<!\w)_(?=\S)([^_\n]+?)(?<=\S)_(?!\w)")
 _BLANK_LINES = re.compile(r"\n{2,}")
 _SPACES = re.compile(r"[ \t]{2,}")
 
@@ -35,6 +39,7 @@ def speakable(text: str, *, max_chars: int | None = None) -> str:
     out = _MD_HEADING.sub("", out)
     out = _MD_BULLET.sub("", out)
     out = _MD_EMPHASIS.sub(r"\2", out)
+    out = _MD_UNDERSCORE.sub(r"\1", out)
     out = _BLANK_LINES.sub("\n", out)
     out = _SPACES.sub(" ", out)
     out = "\n".join(line.strip() for line in out.splitlines())
@@ -49,6 +54,20 @@ def speakable(text: str, *, max_chars: int | None = None) -> str:
             head = head[:cut]
         out = head.rstrip(" .,;:\n") + " …"
     return out
+
+
+def unavailable_reason(*, local: bool) -> str | None:
+    """Why TTS cannot run right now, phrased for the room. None = good to go."""
+    if local:
+        model = settings.piper_model_path
+        if (model is not None and model.is_file() and shutil.which("piper")) or shutil.which(
+            "espeak-ng"
+        ):
+            return None
+        return "local TTS needs `espeak-ng` on PATH (or `piper` + `PIPER_MODEL_PATH`)"
+    if importlib.util.find_spec("edge_tts") is None:
+        return "`edge-tts` is not installed — start with `EXTRAS=voice ./run-host.sh`"
+    return None
 
 
 def _tts_dir() -> Path:
@@ -91,7 +110,9 @@ async def _run(cmd: list[str], *, stdin: bytes | None = None) -> bool:
     )
     _, err = await proc.communicate(stdin)
     if proc.returncode != 0:
-        logger.warning("%s failed (%s): %s", cmd[0], proc.returncode, err.decode(errors="replace")[:400])
+        logger.warning(
+            "%s failed (%s): %s", cmd[0], proc.returncode, err.decode(errors="replace")[:400]
+        )
         return False
     return True
 

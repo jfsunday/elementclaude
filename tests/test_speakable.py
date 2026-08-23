@@ -26,6 +26,16 @@ def test_strips_markdown_noise() -> None:
     assert out == "Heading\nbold item\nitalic item"
 
 
+def test_snake_case_identifiers_survive() -> None:
+    text = "I updated some_var_name and other_thing_here"
+    assert speakable(text, max_chars=1000) == text
+
+
+def test_dunder_identifiers_survive() -> None:
+    text = "Fixed __init__ and _add_missing_columns"
+    assert speakable(text, max_chars=1000) == text
+
+
 def test_truncates_at_max_chars_on_a_boundary() -> None:
     text = "Alpha beta gamma. " * 40
     out = speakable(text, max_chars=100)

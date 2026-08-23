@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import mimetypes
 from pathlib import Path
@@ -30,6 +31,21 @@ def resolve_local(engine: str) -> tuple[bool, str | None]:
 # one transcription run at a time (it saturates the CPU anyway).
 _model: Any = None
 _local_lock = asyncio.Lock()
+
+
+def unavailable_reason(*, local: bool) -> str | None:
+    """Why STT cannot run right now, phrased for the room. None = good to go."""
+    if not local:
+        return None
+    if importlib.util.find_spec("faster_whisper") is None:
+        return "`faster-whisper` is not installed — start with `EXTRAS=voice ./run-host.sh`"
+    return None
+
+
+def model_loaded() -> bool:
+    """False until the first local transcription has pulled the model into memory —
+    that first run may also download a multi-GB model, so the room deserves a heads-up."""
+    return _model is not None
 
 
 def _load_model() -> Any:

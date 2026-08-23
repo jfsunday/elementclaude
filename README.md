@@ -114,11 +114,13 @@ the final answer of each run comes back as an `m.audio` message.
 
 | Engine | STT | TTS |
 |---|---|---|
-| `cloud` | `STT_API_URL` (default: HuggingFace `whisper-large-v3`, free tier) | `edge-tts` — Microsoft Edge read-aloud, **no API key** |
+| `cloud` | `STT_API_URL` (default: HuggingFace `whisper-large-v3` via `router.huggingface.co`, free tier) | `edge-tts` — Microsoft Edge read-aloud, **no API key** |
 | `local` | `faster-whisper`, `STT_MODEL=medium`, fully offline | `piper` if `PIPER_MODEL_PATH` is set, else `espeak-ng` |
 
 Everything is free. There is no keyless free Whisper API though, so `engine cloud`
-without an `STT_API_TOKEN` falls back to local transcription and says so in the room.
+without an `STT_API_TOKEN` falls back to local transcription — `!voice` tells you when
+that's happening. Groq's free tier works too, set
+`STT_API_URL=https://api.groq.com/openai/v1/audio/transcriptions` plus `STT_API_MODEL`.
 
 Voice needs the optional `voice` extra. `uv run` re-syncs the venv on every start,
 so pass it via `EXTRAS` instead of installing by hand:
@@ -126,10 +128,17 @@ so pass it via `EXTRAS` instead of installing by hand:
 ```bash
 EXTRAS=voice ./run-host.sh             # foreground
 EXTRAS=voice ./run-host.sh --install   # bakes it into the systemd unit
+EXTRAS="voice dev" ./run-host.sh       # several extras, space separated
 ```
 
 `faster-whisper` downloads the `medium` model (~1.5 GB) on the first local
 transcription. Local TTS wants `espeak-ng` (or `piper` + `PIPER_MODEL_PATH`).
+`!voice` warns when a backend is enabled but missing, so it never fails silently.
+
+**Caveat:** inbound audio currently only reaches elementclaude from **encrypted**
+rooms. In unencrypted rooms messaging-bot normalises media events without an
+`msgtype`, so they're dropped before STT ever sees them. Element DMs are encrypted
+by default, so this rarely bites — but plain rooms won't transcribe.
 
 ### Interactive shell (real TTY)
 

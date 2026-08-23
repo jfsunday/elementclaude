@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     stt_language: str | None = Field(default=None, description="Force a language, None = autodetect")
     stt_max_seconds: int = Field(default=300, description="Reject voice messages longer than this")
     stt_api_url: str = Field(
-        default="https://api-inference.huggingface.co/models/openai/whisper-large-v3",
+        default="https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3",
         description="OpenAI-compatible /audio/transcriptions endpoint (or HF inference URL)",
     )
     stt_api_token: str | None = Field(

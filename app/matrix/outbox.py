@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -101,6 +102,17 @@ async def set_typing(room_id: str, typing: bool, timeout_ms: int = 30000) -> Non
         resp.raise_for_status()
     except Exception as exc:
         logger.debug("set_typing failed: %s", exc)
+
+
+async def typing_keepalive(room_id: str) -> None:
+    """Refresh the typing indicator every 20s until cancelled. Run as a task."""
+    try:
+        while True:
+            await set_typing(room_id, True, timeout_ms=30000)
+            await asyncio.sleep(20)
+    except asyncio.CancelledError:
+        await set_typing(room_id, False)
+        raise
 
 
 async def download_media(mxc: str | None, file_info: dict[str, Any] | None = None) -> tuple[bytes, str] | None:

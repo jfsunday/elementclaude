@@ -211,16 +211,31 @@ async def cmd_voice(room_id: str, args: str, sender: str) -> None:
     if room is None:
         await _reply(room_id, "no room state yet")
         return
+    from app.voice import stt, tts
+
     voice = room.tts_voice or f"{settings.tts_voice} (default)"
-    await _reply(
-        room_id,
-        "\n".join([
-            f"**stt** {_on_off(room.stt_enabled)} — voice messages get transcribed",
-            f"**tts** {_on_off(room.tts_enabled)} — answers get read back as audio",
-            f"**engine** `{room.voice_engine}`",
-            f"**tts voice** `{voice}`",
-        ]),
-    )
+    lines = [
+        f"**stt** {_on_off(room.stt_enabled)} — voice messages get transcribed",
+        f"**tts** {_on_off(room.tts_enabled)} — answers get read back as audio",
+        f"**engine** `{room.voice_engine}`",
+        f"**tts voice** `{voice}`",
+    ]
+
+    # An enabled-but-unusable backend otherwise fails silently, which looks like the
+    # feature is simply broken. Say so here, where the state is being shown anyway.
+    if room.stt_enabled:
+        stt_local, note = stt.resolve_local(room.voice_engine)
+        if note:
+            lines.append(f"ℹ️ {note}")
+        reason = stt.unavailable_reason(local=stt_local)
+        if reason:
+            lines.append(f"⚠️ stt won't work: {reason}")
+    if room.tts_enabled:
+        reason = tts.unavailable_reason(local=room.voice_engine == "local")
+        if reason:
+            lines.append(f"⚠️ tts won't work: {reason}")
+
+    await _reply(room_id, "\n".join(lines))
 
 
 async def cmd_mode(room_id: str, args: str, sender: str) -> None:
