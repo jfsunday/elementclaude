@@ -60,8 +60,14 @@ app/
 - Host mode (recommended, needed for `!run` to reach real host binaries):
   `./run-host.sh` (foreground) or `./run-host.sh --install` (systemd user service).
 - Docker mode (sandboxed): `dc up --build -d` (project alias `dc` = `docker compose`).
-- No test suite exists yet; when adding one, wire it into `pyproject.toml` and prefer
-  `pytest` + `pytest-asyncio` given the async codebase.
+- Optional extras are declared in `pyproject.toml` (`voice`, `dev`) and selected via the
+  `EXTRAS` env var: `EXTRAS=voice ./run-host.sh` (also `EXTRAS="voice dev"`, and it gets
+  baked into the unit on `--install`). `uv run` re-syncs the venv on every start, so a
+  manual `uv pip install '.[voice]'` is pruned again — always name the extra via `EXTRAS`.
+- Tests: `uv run --extra dev pytest` (`pytest` + `pytest-asyncio`, `asyncio_mode = "auto"`,
+  `testpaths = ["tests"]`). `app.config` validates and `app.db` builds its engine at import
+  time, so required env vars must be set in `tests/conftest.py` *before* anything from `app`
+  is imported — real env vars outrank `.env`, which also isolates runs from local config.
 
 ## Out of scope / do NOT
 - **Never** start/stop/restart/enable/disable the `elementclaude` systemd user service, and
