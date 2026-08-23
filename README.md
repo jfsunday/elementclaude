@@ -95,6 +95,41 @@ Element already eats `/`, so elementclaude uses `!`.
 | `!cancel` | Stop the current run |
 | `!resume` | List sessions for this cwd (also ones from your own `claude` CLI) |
 | `!resume <n>\|<session-id>` | Attach to a specific session |
+| `!voice …` | Speech in/out — see below |
+
+### Voice (STT + TTS)
+
+Off by default. `!voice on` makes the room listen and talk:
+Element voice messages are transcribed and routed exactly like typed text, and
+the final answer of each run comes back as an `m.audio` message.
+
+| Command | What it does |
+|---|---|
+| `!voice` | Show the current voice state |
+| `!voice on\|off` | Toggle STT **and** TTS |
+| `!voice stt on\|off` | Only inbound transcription |
+| `!voice tts on\|off` | Only spoken answers |
+| `!voice engine local\|cloud` | Where speech is processed |
+| `!voice voice <name>\|default` | Override the edge-tts voice for this room |
+
+| Engine | STT | TTS |
+|---|---|---|
+| `cloud` | `STT_API_URL` (default: HuggingFace `whisper-large-v3`, free tier) | `edge-tts` — Microsoft Edge read-aloud, **no API key** |
+| `local` | `faster-whisper`, `STT_MODEL=medium`, fully offline | `piper` if `PIPER_MODEL_PATH` is set, else `espeak-ng` |
+
+Everything is free. There is no keyless free Whisper API though, so `engine cloud`
+without an `STT_API_TOKEN` falls back to local transcription and says so in the room.
+
+Voice needs the optional `voice` extra. `uv run` re-syncs the venv on every start,
+so pass it via `EXTRAS` instead of installing by hand:
+
+```bash
+EXTRAS=voice ./run-host.sh             # foreground
+EXTRAS=voice ./run-host.sh --install   # bakes it into the systemd unit
+```
+
+`faster-whisper` downloads the `medium` model (~1.5 GB) on the first local
+transcription. Local TTS wants `espeak-ng` (or `piper` + `PIPER_MODEL_PATH`).
 
 ### Interactive shell (real TTY)
 
@@ -166,5 +201,6 @@ app/
 ├── commands/           # ! parser + builtins + gsd: forwarding
 ├── agent/              # ClaudeSDKClient per room, streaming, sessions store, modes
 ├── shell/              # interactive PTY subprocess for !run
+├── voice/              # stt (whisper) + tts (edge-tts / piper / espeak)
 └── reactions/          # m.reaction events → approval futures
 ```

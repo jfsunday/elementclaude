@@ -27,6 +27,10 @@ async def upsert_room(room_id: str, **fields: Any) -> Room:
                 model=fields.get("model", settings.default_model),
                 cwd=fields.get("cwd"),
                 claude_session_id=fields.get("claude_session_id"),
+                stt_enabled=fields.get("stt_enabled", settings.voice_enabled_default),
+                tts_enabled=fields.get("tts_enabled", settings.voice_enabled_default),
+                voice_engine=fields.get("voice_engine", settings.voice_engine_default),
+                tts_voice=fields.get("tts_voice"),
             )
             s.add(room)
         else:

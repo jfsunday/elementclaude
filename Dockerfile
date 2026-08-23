@@ -2,8 +2,10 @@ FROM python:3.12-slim
 
 # Node + Claude Code CLI (the agent-sdk shells out to it under the hood).
 # Git is needed by some Claude tools; ripgrep is what its Grep tool uses.
+# ffmpeg + espeak-ng back the voice features. Whisper model weights are NOT
+# baked in (hundreds of MB), so docker mode is cloud-voice by default.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates git ripgrep \
+    curl ca-certificates git ripgrep ffmpeg espeak-ng \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \

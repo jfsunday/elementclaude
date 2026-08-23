@@ -21,7 +21,20 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["app", "app.matrix", "app.rooms", "app.commands", "app.agent", "app.reactions", "app.shell"]
+packages = ["app", "app.matrix", "app.rooms", "app.commands", "app.agent", "app.reactions", "app.shell", "app.voice"]
 
 [project.optional-dependencies]
-# nothing yet
+# Speech in/out. Imported lazily, so the base install works without these —
+# voice just stays unavailable and says so in the room.
+voice = [
+    "edge-tts>=6.1,<8",       # Microsoft Edge read-aloud, keyless
+    "faster-whisper>=1.0,<2",  # local Whisper, offline
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

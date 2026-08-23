@@ -45,6 +45,7 @@ _HELP_STRUCTURE: list[HelpSection] = [
         HelpEntry("clear", "start a new Claude session"),
         HelpEntry("cancel", "stop the current run"),
         HelpEntry("resume", "list / attach to sessions in current cwd", "[n|<session-id>]"),
+        HelpEntry("voice", "speech in/out", "on|off | stt|tts on|off | engine local|cloud | voice <name>"),
     ]),
     HelpSection("Interactive shell (TTY)", [
         HelpEntry("run", "spawn PTY shell; next msgs become stdin", "<cmd>"),
@@ -134,6 +135,7 @@ async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
         f"**model** `{room.model}`",
         f"**cwd** `{room.cwd or '(unset)'}`",
         f"**mode** {room.mode}",
+        f"**voice** stt {_on_off(room.stt_enabled)} / tts {_on_off(room.tts_enabled)} · engine `{room.voice_engine}`",
         f"**running** {'🟢 ' + running_what if is_running else '⚫ idle'}",
     ]
     if sess is not None:
@@ -155,6 +157,70 @@ async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
     if auto:
         lines.append(f"**auto-allowed** {', '.join(auto)}")
     await _reply(room_id, "\n".join(lines))
+
+
+VOICE_USAGE = (
+    "usage: `!voice [on|off | stt on|off | tts on|off | engine local|cloud | voice <name>]`"
+)
+
+_BOOLS = {"on": True, "off": False}
+_VOICE_ENGINES = {"local", "cloud"}
+
+
+def _on_off(value: bool) -> str:
+    return "on" if value else "off"
+
+
+def parse_voice_args(args: str) -> dict[str, Any] | None:
+    """Parse `!voice` arguments into `Room` fields.
+
+    Returns None when there are no arguments (= just show the current state).
+    Raises ValueError with a usage hint for anything unrecognised.
+    """
+    parts = args.split()
+    if not parts:
+        return None
+    sub = parts[0].lower()
+    rest = parts[1].lower() if len(parts) == 2 else None
+
+    if len(parts) == 1 and sub in _BOOLS:
+        both = _BOOLS[sub]
+        return {"stt_enabled": both, "tts_enabled": both}
+    if sub in ("stt", "tts") and rest in _BOOLS:
+        return {f"{sub}_enabled": _BOOLS[rest]}
+    if sub == "engine" and rest in _VOICE_ENGINES:
+        return {"voice_engine": rest}
+    if sub == "voice" and len(parts) == 2:
+        name = parts[1]
+        return {"tts_voice": None if name.lower() in ("default", "reset") else name}
+    raise ValueError(VOICE_USAGE)
+
+
+async def cmd_voice(room_id: str, args: str, sender: str) -> None:
+    try:
+        fields = parse_voice_args(args)
+    except ValueError as exc:
+        await _reply(room_id, str(exc))
+        return
+
+    if fields is not None:
+        await upsert_room(room_id, **fields)
+        await audit("voice_change", room_id=room_id, actor=sender, **fields)
+
+    room = await get_room(room_id)
+    if room is None:
+        await _reply(room_id, "no room state yet")
+        return
+    voice = room.tts_voice or f"{settings.tts_voice} (default)"
+    await _reply(
+        room_id,
+        "\n".join([
+            f"**stt** {_on_off(room.stt_enabled)} — voice messages get transcribed",
+            f"**tts** {_on_off(room.tts_enabled)} — answers get read back as audio",
+            f"**engine** `{room.voice_engine}`",
+            f"**tts voice** `{voice}`",
+        ]),
+    )
 
 
 async def cmd_mode(room_id: str, args: str, sender: str) -> None:
@@ -498,6 +564,7 @@ BUILTINS: dict[str, Handler] = {
     "clear": cmd_clear,
     "cancel": cmd_cancel,
     "resume": cmd_resume,
+    "voice": cmd_voice,
     "auth": cmd_auth,
     "admin": cmd_admin,
     "run": cmd_run,

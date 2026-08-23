@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.config import settings
 from app.rooms.auth import is_admin
-from app.rooms.state import audit, is_room_enabled
+from app.rooms.state import audit, get_room, is_room_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,102 @@ def _is_media_message(event: dict[str, Any]) -> bool:
 
 def _is_reaction(event: dict[str, Any]) -> bool:
     return event.get("event_type") == "m.reaction"
+
+
+async def _route_text(event: dict[str, Any], body: str, room_id: str, sender_id: str) -> None:
+    """Route message text through the shell / pending-question / command layers.
+
+    Shared by real `m.text` events and transcripts of voice messages, so a spoken
+    prompt behaves exactly like a typed one.
+    """
+    await audit("inbound_message", room_id=room_id, actor=sender_id, body_preview=body[:200])
+
+    # Routing priority for plain messages (no `!` prefix):
+    #   1. Active PTY shell → stdin
+    #   2. Open AskUserQuestion / ExitPlanMode / approval pending → answer
+    #   3. Command router (agent prompt)
+    # `!`-commands always go through the router so control (`!end`, `!cancel`, …)
+    # works during any of these states.
+    if not body.lstrip().startswith("!"):
+        from app.shell.interactive import get_active
+
+        sh = get_active(room_id)
+        if sh is not None:
+            if not sh.write(body + "\n"):
+                await audit("shell_stdin_failed", room_id=room_id, actor=sender_id)
+            return
+
+        from app.agent.permissions import handle_text_answer
+
+        if await handle_text_answer(room_id, body, sender_id):
+            return
+
+    from app.commands.router import dispatch
+
+    if event.get("body") != body:
+        event = {
+            **event,
+            "body": body,
+            "content": {**(event.get("content") or {}), "body": body, "msgtype": "m.text"},
+        }
+    await dispatch(event)
+
+
+async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> None:
+    from app.agent.attachments import handle_inbound_media, queue_attachment
+    from app.matrix import outbox
+
+    content = event.get("content") or {}
+    room = await get_room(room_id)
+    want_stt = content.get("msgtype") == "m.audio" and bool(room and room.stt_enabled)
+
+    duration_ms = (content.get("info") or {}).get("duration")
+    if (
+        want_stt
+        and isinstance(duration_ms, (int, float))
+        and duration_ms > settings.stt_max_seconds * 1000
+    ):
+        want_stt = False
+        await outbox.send_text(
+            room_id,
+            f"🎙️ longer than {settings.stt_max_seconds}s — attaching instead of transcribing.",
+            notice=True,
+        )
+
+    path = await handle_inbound_media(event, queue=not want_stt)
+    if path is None:
+        return
+
+    if not want_stt:
+        await outbox.send_text(
+            room_id,
+            "📎 attached — will hand it to Claude with your next message.",
+            notice=True,
+        )
+        return
+
+    from app.voice import stt
+
+    use_local, note = stt.resolve_local(room.voice_engine if room else "cloud")
+    if note:
+        await outbox.send_text(room_id, f"ℹ️ {note}", notice=True)
+
+    await outbox.set_typing(room_id, True)
+    try:
+        transcript = await stt.transcribe(path, local=use_local)
+    finally:
+        await outbox.set_typing(room_id, False)
+
+    if transcript is None:
+        await queue_attachment(room_id, path)
+        await outbox.send_text(
+            room_id, "⚠️ could not transcribe — 📎 attached the audio instead.", notice=True
+        )
+        return
+
+    await audit("stt_transcript", room_id=room_id, actor=sender_id, local=use_local)
+    await outbox.send_text(room_id, f'🎙️ "{transcript}"', notice=True)
+    await _route_text(event, transcript, room_id, sender_id)
 
 
 async def handle_inbound(event: dict[str, Any]) -> None:
@@ -48,16 +145,7 @@ async def handle_inbound(event: dict[str, Any]) -> None:
     if _is_media_message(event):
         if not await is_room_enabled(room_id):
             return
-        from app.agent.attachments import handle_inbound_media
-        from app.matrix import outbox
-
-        path = await handle_inbound_media(event)
-        if path is not None:
-            await outbox.send_text(
-                room_id,
-                f"📎 attached — will hand it to Claude with your next message.",
-                notice=True,
-            )
+        await _handle_media(event, room_id, sender_id)
         return
 
     if not _is_text_message(event):
@@ -78,30 +166,4 @@ async def handle_inbound(event: dict[str, Any]) -> None:
         )
         return
 
-    await audit("inbound_message", room_id=room_id, actor=sender_id, body_preview=body[:200])
-
-    # Routing priority for plain messages (no `!` prefix):
-    #   1. Active PTY shell → stdin
-    #   2. Open AskUserQuestion / ExitPlanMode / approval pending → answer
-    #   3. Command router (agent prompt)
-    # `!`-commands always go through the router so control (`!end`, `!cancel`, …)
-    # works during any of these states.
-    body_starts_with_bang = body.lstrip().startswith("!")
-
-    if not body_starts_with_bang:
-        from app.shell.interactive import get_active
-
-        sh = get_active(room_id)
-        if sh is not None:
-            if not sh.write(body + "\n"):
-                await audit("shell_stdin_failed", room_id=room_id, actor=sender_id)
-            return
-
-        from app.agent.permissions import handle_text_answer
-
-        if await handle_text_answer(room_id, body, sender_id):
-            return
-
-    from app.commands.router import dispatch
-
-    await dispatch(event)
+    await _route_text(event, body, room_id, sender_id)

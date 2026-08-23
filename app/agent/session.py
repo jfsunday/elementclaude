@@ -319,6 +319,26 @@ async def _typing_keepalive(room_id: str) -> None:
         raise
 
 
+async def _maybe_speak(room_id: str, text: str) -> None:
+    """Best-effort: read the final assistant answer back as an m.audio message."""
+    if not text.strip():
+        return
+    room = await get_room(room_id)
+    if room is None or not room.tts_enabled:
+        return
+    try:
+        from app.voice.tts import synthesize
+
+        path = await synthesize(
+            text, local=room.voice_engine == "local", voice=room.tts_voice
+        )
+        if path is None:
+            return
+        await outbox.send_media(room_id, str(path), msgtype="m.audio")
+    except Exception:
+        logger.exception("TTS failed for room=%s", room_id)
+
+
 async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     if sess.client is None:
         sess.client = await _build_client_with_resume_recovery(sess)
@@ -338,9 +358,11 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     stream_text = ""
     last_edit_time = 0.0
     EDIT_MIN_INTERVAL = 1.2
+    # Last completed text stream of the run — the bit worth speaking aloud.
+    final_text = ""
 
     async def flush_stream(final: bool = False) -> None:
-        nonlocal stream_event_id, stream_text, last_edit_time
+        nonlocal stream_event_id, stream_text, last_edit_time, final_text
         if not stream_text.strip():
             if final:
                 stream_event_id = None
@@ -356,6 +378,7 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
                 await outbox.edit_markdown(room_id, stream_event_id, plain, html)
                 last_edit_time = now
         if final:
+            final_text = stream_text
             stream_event_id = None
             stream_text = ""
 
@@ -396,6 +419,7 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
                     )
 
         await flush_stream(final=True)
+        await _maybe_speak(room_id, final_text)
     finally:
         typing_task.cancel()
         try:
