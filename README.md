@@ -122,8 +122,12 @@ without an `STT_API_TOKEN` falls back to local transcription — `!voice` tells 
 that's happening. Groq's free tier works too, set
 `STT_API_URL=https://api.groq.com/openai/v1/audio/transcriptions` plus `STT_API_MODEL`.
 
-Voice needs the optional `voice` extra. `uv run` re-syncs the venv on every start,
-so pass it via `EXTRAS` instead of installing by hand:
+An OpenAI-compatible `STT_API_URL` also needs `STT_API_MODEL` — `!voice` says so
+instead of letting every transcription fail with a 400.
+
+Voice needs the optional `voice` extra (the Docker image already ships it).
+In host mode `uv run` re-syncs the venv on every start, so pass it via `EXTRAS`
+instead of installing by hand:
 
 ```bash
 EXTRAS=voice ./run-host.sh             # foreground

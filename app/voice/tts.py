@@ -66,7 +66,10 @@ def unavailable_reason(*, local: bool) -> str | None:
             return None
         return "local TTS needs `espeak-ng` on PATH (or `piper` + `PIPER_MODEL_PATH`)"
     if importlib.util.find_spec("edge_tts") is None:
-        return "`edge-tts` is not installed — start with `EXTRAS=voice ./run-host.sh`"
+        return (
+            "`edge-tts` is not installed — install the `voice` extra "
+            "(`EXTRAS=voice ./run-host.sh`, or rebuild the image)"
+        )
     return None
 
 
@@ -80,10 +83,24 @@ _KEEP_FILES = 50
 
 
 def _prune(directory: Path) -> None:
-    """Every answer produces an audio file — keep only the most recent ones."""
-    files = sorted(directory.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for stale in files[_KEEP_FILES:]:
-        stale.unlink(missing_ok=True)
+    """Every answer produces an audio file — keep only the most recent ones.
+
+    Best effort: two rooms answering at once can make a file vanish mid-sort, and
+    housekeeping must never cost the caller its freshly rendered audio.
+    """
+    try:
+        files = sorted(directory.glob("*"), key=_mtime, reverse=True)
+        for stale in files[_KEEP_FILES:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("pruning %s failed", directory, exc_info=True)
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 async def _synthesize_cloud(text: str, voice: str, dest: Path) -> Path | None:

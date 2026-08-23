@@ -135,7 +135,8 @@ async def cmd_status(room_id: str, _args: str, _sender: str) -> None:
         f"**model** `{room.model}`",
         f"**cwd** `{room.cwd or '(unset)'}`",
         f"**mode** {room.mode}",
-        f"**voice** stt {_on_off(room.stt_enabled)} / tts {_on_off(room.tts_enabled)} · engine `{room.voice_engine}`",
+        f"**voice** stt {_on_off(room.stt_enabled)} / tts {_on_off(room.tts_enabled)}"
+        f" · engine `{room.voice_engine}`",
         f"**running** {'🟢 ' + running_what if is_running else '⚫ idle'}",
     ]
     if sess is not None:

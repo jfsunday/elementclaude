@@ -82,20 +82,24 @@ async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> 
     want_stt = content.get("msgtype") == "m.audio" and bool(room and room.stt_enabled)
 
     duration_ms = (content.get("info") or {}).get("duration")
-    if (
+    too_long = (
         want_stt
         and isinstance(duration_ms, (int, float))
         and duration_ms > settings.stt_max_seconds * 1000
-    ):
+    )
+    if too_long:
         want_stt = False
-        await outbox.send_text(
-            room_id,
-            f"🎙️ longer than {settings.stt_max_seconds}s — attaching instead of transcribing.",
-            notice=True,
-        )
 
     path = await handle_inbound_media(event, queue=not want_stt)
     if path is None:
+        return
+
+    if too_long:
+        await outbox.send_text(
+            room_id,
+            f"🎙️ longer than {settings.stt_max_seconds}s — 📎 attached instead.",
+            notice=True,
+        )
         return
 
     # Clients that don't send `info.duration` bypass the check above, so guard on size too.
@@ -142,8 +146,10 @@ async def _handle_media(event: dict[str, Any], room_id: str, sender_id: str) -> 
             typing_task.cancel()
             try:
                 await typing_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.debug("typing keepalive ended badly", exc_info=True)
 
     if transcript is None:
         await queue_attachment(room_id, path)

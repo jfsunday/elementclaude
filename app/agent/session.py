@@ -427,8 +427,10 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
         typing_task.cancel()
         try:
             await typing_task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.debug("typing keepalive ended badly", exc_info=True)
 
 
 async def handle_prompt(room_id: str, sender_id: str, prompt: str) -> None:

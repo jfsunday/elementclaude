@@ -33,12 +33,26 @@ _model: Any = None
 _local_lock = asyncio.Lock()
 
 
+def _is_openai_compatible(url: str) -> bool:
+    """Groq, whisper.cpp servers, … expect multipart + a `model` field.
+    HuggingFace inference takes the raw audio body instead."""
+    return url.rstrip("/").endswith("/audio/transcriptions")
+
+
 def unavailable_reason(*, local: bool) -> str | None:
     """Why STT cannot run right now, phrased for the room. None = good to go."""
     if not local:
+        if _is_openai_compatible(settings.stt_api_url) and not settings.stt_api_model:
+            return (
+                "`STT_API_URL` is an OpenAI-compatible endpoint, so `STT_API_MODEL` "
+                "must be set too (e.g. `whisper-large-v3`)"
+            )
         return None
     if importlib.util.find_spec("faster_whisper") is None:
-        return "`faster-whisper` is not installed — start with `EXTRAS=voice ./run-host.sh`"
+        return (
+            "`faster-whisper` is not installed — install the `voice` extra "
+            "(`EXTRAS=voice ./run-host.sh`, or rebuild the image)"
+        )
     return None
 
 
@@ -91,11 +105,18 @@ async def _transcribe_cloud(path: Path) -> str | None:
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        if url.rstrip("/").endswith("/audio/transcriptions"):
-            # OpenAI-compatible endpoint (Groq, local whisper.cpp servers, …)
-            form = {"model": settings.stt_api_model or settings.stt_model}
+        if _is_openai_compatible(url):
+            # OpenAI-compatible endpoint (Groq, local whisper.cpp servers, …).
+            # No sane fallback here: `stt_model` holds a faster-whisper size like
+            # "medium", which these endpoints reject with a 400.
+            if not settings.stt_api_model:
+                logger.warning("STT_API_URL is OpenAI-compatible but STT_API_MODEL is unset")
+                return None
             resp = await client.post(
-                url, headers=headers, files={"file": (path.name, data, mime)}, data=form
+                url,
+                headers=headers,
+                files={"file": (path.name, data, mime)},
+                data={"model": settings.stt_api_model},
             )
         else:
             # HuggingFace inference API: raw audio body
