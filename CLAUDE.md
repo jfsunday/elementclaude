@@ -29,6 +29,7 @@ app/
 ├── agent/                # ClaudeSDKClient per room: session.py, modes.py, permissions.py,
 │                          # sessions_store.py, attachments.py
 ├── shell/                # interactive.py — PTY subprocess for !run
+├── voice/                # stt.py (faster-whisper / HTTP API) + tts.py (edge-tts / piper)
 └── reactions/            # tracker.py — m.reaction events → approval futures
 ```
 
@@ -47,6 +48,11 @@ app/
   `!gsd:<cmd>` → `/gsd:<cmd>`. New commands go through `app/commands/router.py`.
 - Settings are env-driven via `pydantic-settings` (`app/config.py`, backed by `.env`,
   see `.env.example`). Add new config as typed `Field`s there, not ad-hoc `os.environ` reads.
+- Model columns added after the fact are backfilled by `_add_missing_columns()` in
+  `app/db.py` (`create_all` never alters existing tables). New columns must therefore be
+  nullable or carry a scalar default, otherwise the migration skips them with a warning.
+- Voice deps (`edge-tts`, `faster-whisper`) live in the optional `[voice]` extra and are
+  imported lazily inside `app/voice/*` — a base install must keep working without them.
 
 ## Running / testing
 - Copy `.env.example` → `.env` and fill secrets (Anthropic key, messaging-bot URL/key,

@@ -308,15 +308,38 @@ def _format_text(text: str) -> tuple[str, str]:
     return text, html
 
 
-async def _typing_keepalive(room_id: str) -> None:
-    """Refresh the typing indicator every 20s until cancelled."""
+# Rooms already told that TTS is broken — the warning is worth saying once, not
+# after every single answer.
+_tts_warned: set[str] = set()
+
+
+async def _maybe_speak(room_id: str, text: str) -> None:
+    """Best-effort: read the final assistant answer back as an m.audio message."""
+    if not text.strip():
+        return
+    room = await get_room(room_id)
+    if room is None or not room.tts_enabled:
+        return
     try:
-        while True:
-            await outbox.set_typing(room_id, True, timeout_ms=30000)
-            await asyncio.sleep(20)
-    except asyncio.CancelledError:
-        await outbox.set_typing(room_id, False)
-        raise
+        from app.voice import tts
+
+        local = room.voice_engine == "local"
+        reason = tts.unavailable_reason(local=local)
+        path = None if reason else await tts.synthesize(text, local=local, voice=room.tts_voice)
+        if path is None:
+            if room_id not in _tts_warned:
+                _tts_warned.add(room_id)
+                detail = reason or "synthesis failed — see the logs"
+                await outbox.send_text(
+                    room_id,
+                    f"⚠️ tts is on but silent: {detail}. `!voice tts off` to stop trying.",
+                    notice=True,
+                )
+            return
+        _tts_warned.discard(room_id)
+        await outbox.send_media(room_id, str(path), msgtype="m.audio")
+    except Exception:
+        logger.exception("TTS failed for room=%s", room_id)
 
 
 async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
@@ -338,9 +361,11 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
     stream_text = ""
     last_edit_time = 0.0
     EDIT_MIN_INTERVAL = 1.2
+    # Last completed text stream of the run — the bit worth speaking aloud.
+    final_text = ""
 
     async def flush_stream(final: bool = False) -> None:
-        nonlocal stream_event_id, stream_text, last_edit_time
+        nonlocal stream_event_id, stream_text, last_edit_time, final_text
         if not stream_text.strip():
             if final:
                 stream_event_id = None
@@ -356,10 +381,11 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
                 await outbox.edit_markdown(room_id, stream_event_id, plain, html)
                 last_edit_time = now
         if final:
+            final_text = stream_text
             stream_event_id = None
             stream_text = ""
 
-    typing_task = asyncio.create_task(_typing_keepalive(room_id))
+    typing_task = asyncio.create_task(outbox.typing_keepalive(room_id))
 
     try:
         async for msg in sess.client.receive_response():
@@ -396,12 +422,15 @@ async def _run_prompt(room_id: str, sess: RoomSession, prompt: str) -> None:
                     )
 
         await flush_stream(final=True)
+        await _maybe_speak(room_id, final_text)
     finally:
         typing_task.cancel()
         try:
             await typing_task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.debug("typing keepalive ended badly", exc_info=True)
 
 
 async def handle_prompt(room_id: str, sender_id: str, prompt: str) -> None:

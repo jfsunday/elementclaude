@@ -34,9 +34,12 @@ def _safe_name(s: str, default: str = "file") -> str:
     return s[:80] or default
 
 
-async def handle_inbound_media(event: dict[str, Any]) -> Path | None:
+async def handle_inbound_media(event: dict[str, Any], *, queue: bool = True) -> Path | None:
     """Download an inbound m.image/m.file/etc and cache the path for the next
-    prompt in this room. Returns the local path if successful."""
+    prompt in this room. Returns the local path if successful.
+
+    `queue=False` downloads without enqueuing — used by the voice path, where the
+    audio becomes a transcript rather than an attachment."""
     room = event.get("room") or {}
     room_id = room.get("id")
     if not room_id:
@@ -68,11 +71,16 @@ async def handle_inbound_media(event: dict[str, Any]) -> Path | None:
     dest = dest_dir / f"{event_id}-{filename}"
     dest.write_bytes(data)
 
-    async with _lock:
-        _pending_attachments.setdefault(room_id, []).append(dest)
+    if queue:
+        await queue_attachment(room_id, dest)
 
-    logger.info("cached attachment for room=%s: %s (%d bytes)", room_id, dest, len(data))
+    logger.info("downloaded attachment for room=%s: %s (%d bytes)", room_id, dest, len(data))
     return dest
+
+
+async def queue_attachment(room_id: str, path: Path) -> None:
+    async with _lock:
+        _pending_attachments.setdefault(room_id, []).append(path)
 
 
 async def pop_attachments(room_id: str) -> list[Path]:

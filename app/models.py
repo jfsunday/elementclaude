@@ -26,6 +26,11 @@ class Room(Base):
     model: Mapped[str] = mapped_column(String(64), default="claude-opus-4-7", nullable=False)
     cwd: Mapped[str | None] = mapped_column(Text, nullable=True)
     claude_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Voice: transcribe inbound m.audio, speak back final assistant text.
+    stt_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    voice_engine: Mapped[str] = mapped_column(String(16), default="cloud", nullable=False)
+    tts_voice: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_activity: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
